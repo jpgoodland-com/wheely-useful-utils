@@ -8,7 +8,13 @@ const config = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },
-  testPathIgnorePatterns: ['<rootDir>/node_modules/', '<rootDir>/.next/'],
+  testPathIgnorePatterns: [
+    '<rootDir>/node_modules/',
+    '<rootDir>/.next/',
+    '<rootDir>/__tests__/infra/helpers/',
+    '<rootDir>/__tests__/helpers/',
+    '<rootDir>/e2e/', // Playwright specs; run with `npm run test:e2e`
+  ],
 }
 
 module.exports = async () => {

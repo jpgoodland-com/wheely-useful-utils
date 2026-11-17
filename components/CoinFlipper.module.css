@@ -1,0 +1,210 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  padding: 1.5rem;
+}
+
+.coins {
+  --size: 180px;
+  --thickness: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 1.25rem 1rem;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+/* Headroom for the toss arc. The editor preview turns in place and doesn't need it.
+   At the apex a coin's top rises riseFactor * size (CoinFlipper.js: 1.15 for one
+   coin, 1.5 for several) plus 0.15 * size from the 1.3 apex scale in
+   lib/coinToss.js: 1.3 * size for one coin, 1.65 * size for several. */
+.coins.tossable {
+  padding-top: calc(var(--size) * 1.4);
+}
+
+.coins.tossable[data-density="few"],
+.coins.tossable[data-density="many"] {
+  padding-top: calc(var(--size) * 1.7);
+}
+
+.coins[data-density="few"] {
+  --size: 100px;
+  --thickness: 3px;
+  gap: 1rem 0.75rem;
+}
+
+.coins[data-density="many"] {
+  --size: 76px;
+  --thickness: 2.5px;
+  gap: 0.9rem 0.6rem;
+  max-width: 480px;
+}
+
+@media (max-width: 480px) {
+  .coins {
+    --size: 140px;
+  }
+  .coins[data-density="few"] {
+    --size: 78px;
+  }
+  .coins[data-density="many"] {
+    --size: 56px;
+  }
+}
+
+.slot {
+  position: relative;
+  width: var(--size);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stage {
+  position: relative;
+  width: var(--size);
+  height: var(--size);
+  perspective: 900px;
+}
+
+.flight {
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.coin {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform-style: preserve-3d;
+  border-radius: 50%;
+  will-change: transform;
+}
+
+.manual {
+  transition: transform 0.7s cubic-bezier(0.2, 0.8, 0.3, 1.1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .manual {
+    transition: transform 0.2s ease;
+  }
+}
+
+.face {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: calc(var(--size) * 0.022) solid var(--rim-color, #e5e5ec);
+  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.35), inset 0 2px 4px rgba(255, 255, 255, 0.4);
+}
+
+.face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(255, 255, 255, 0) 38%,
+    rgba(0, 0, 0, 0) 62%,
+    rgba(0, 0, 0, 0.22) 100%
+  );
+  pointer-events: none;
+}
+
+.heads {
+  background: radial-gradient(circle at 35% 35%, var(--heads-color, #3b82f6) 0%, rgba(15, 23, 42, 0.95) 120%);
+  transform: translateZ(var(--thickness));
+}
+
+.tails {
+  background: radial-gradient(circle at 35% 35%, var(--tails-color, #ec4899) 0%, rgba(15, 23, 42, 0.95) 120%);
+  transform: rotateX(180deg) translateZ(var(--thickness));
+}
+
+/* Stacked discs between the faces give the coin a visible edge while it tumbles */
+.edge {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--rim-color, #e5e5ec);
+  filter: brightness(0.62);
+  transform: translateZ(calc(var(--k) * var(--thickness)));
+}
+
+/* Style variants */
+.styleClassic {
+  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.3), inset 0 0 15px rgba(0, 0, 0, 0.5);
+}
+
+.styleModern {
+  border-width: calc(var(--size) * 0.017);
+}
+
+.styleRetro {
+  border-style: dashed;
+  border-width: calc(var(--size) * 0.028);
+}
+
+.textFace {
+  font-weight: 800;
+  font-size: calc(var(--size) * 0.2);
+  letter-spacing: 0.05em;
+  color: #ffffff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  padding: 0.5rem;
+  text-align: center;
+  max-width: 90%;
+  word-break: break-word;
+}
+
+.emojiFace {
+  font-size: calc(var(--size) * 0.4);
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.5));
+}
+
+.imageFace {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.shadow {
+  width: 78%;
+  height: calc(var(--size) * 0.09);
+  margin-top: calc(var(--size) * 0.12);
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.5) 0%, transparent 70%);
+  border-radius: 50%;
+}
+
+.glow {
+  position: absolute;
+  inset: -8%;
+  border-radius: 50%;
+  background: radial-gradient(circle, transparent 52%, var(--glow-color, #ffffff) 62%, transparent 74%);
+  opacity: 0;
+  pointer-events: none;
+}

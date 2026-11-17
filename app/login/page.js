@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/AuthContext";
+import { safeNextPath } from "@/lib/url";
 import Link from "next/link";
 import PasswordInput from "@/components/PasswordInput";
 import SocialLoginButtons from "@/components/SocialLoginButtons";
@@ -14,6 +15,7 @@ const OAUTH_ERROR_MESSAGES = {
   no_email: "Unable to retrieve your email from the social login provider.",
   missing_params: "Incomplete response from the social login provider. Please try again.",
   access_denied: "Sign in was cancelled or access was denied by the provider.",
+  session_expired: "Your session expired. Please sign in again to continue.",
 };
 
 function LoginForm() {
@@ -34,6 +36,7 @@ function LoginForm() {
   const errorParam = searchParams.get("error");
   const urlError = errorParam ? (OAUTH_ERROR_MESSAGES[errorParam] || errorParam) : "";
   const displayError = error || urlError;
+  const nextPath = safeNextPath(searchParams.get("next"));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -69,7 +72,7 @@ function LoginForm() {
           lastName: data.lastName || null,
           isAdmin: data.isAdmin,
         });
-        router.push("/dashboard");
+        router.push(nextPath);
       }
     } catch (err) {
       setError("An unexpected error occurred.");

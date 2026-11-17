@@ -1,0 +1,96 @@
+.stage {
+  position: relative;
+  width: 100%;
+  max-width: 500px;
+  margin: 0 auto;
+  overflow: hidden;
+  container-type: inline-size;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 50% 46%, rgba(253, 224, 71, 0.12), transparent 62%),
+    radial-gradient(circle at 12% 0%, rgba(236, 72, 153, 0.12), transparent 45%),
+    radial-gradient(circle at 88% 0%, rgba(59, 130, 246, 0.12), transparent 45%);
+}
+
+.wheelCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.host {
+  position: absolute;
+  left: 82%;
+  top: 62%;
+  width: 24%;
+  aspect-ratio: 48 / 64;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.hostCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 6px 4px rgba(0, 0, 0, 0.45));
+}
+
+.bubble {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  width: max-content;
+  max-width: 200%;
+  margin-bottom: 10px;
+  padding: 0.45rem 0.65rem;
+  border: 3px solid #0f172a;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.35);
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  transform-origin: calc(100% - 12cqw) 100%;
+  animation: bubblePop 0.18s ease-out;
+}
+
+/* The host is 24% of the stage wide, so his head sits 12cqw from the bubble's right edge. */
+.bubble::after {
+  content: "";
+  position: absolute;
+  right: calc(12cqw - 6px);
+  bottom: -9px;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border-right: 3px solid #0f172a;
+  border-bottom: 3px solid #0f172a;
+  transform: rotate(45deg);
+}
+
+@keyframes bubblePop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (max-width: 480px) {
+  .bubble {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble {
+    animation: none;
+  }
+}

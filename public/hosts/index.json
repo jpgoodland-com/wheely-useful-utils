@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "default": "ace",
+  "hosts": [
+    "ace",
+    "fox",
+    "chip"
+  ],
+  "sharedQuotes": "/hosts/shared-quotes.json"
+}

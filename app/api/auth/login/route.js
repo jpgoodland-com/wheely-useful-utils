@@ -4,13 +4,16 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import bcrypt from "bcrypt";
 import { signToken } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rateLimit";
+import { logSecurityEvent } from "@/lib/securityLog";
 
 export async function POST(req) {
   try {
     // H1: Rate limit — 10 attempts per 15 minutes per IP
     const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
-    const { allowed, resetMs } = checkRateLimit(`login:${ip}`, 10, 15 * 60 * 1000);
+    const { allowed, resetMs, firstBlocked } = checkRateLimit(`login:${ip}`, 10, 15 * 60 * 1000);
+    const clientIp = ip.split(",")[0].trim().slice(0, 64);
     if (!allowed) {
+      if (firstBlocked) logSecurityEvent("rate_limited", { tier: "login", ip: clientIp });
       const retryAfterSecs = Math.ceil((resetMs - Date.now()) / 1000);
       return NextResponse.json(
         { error: "Too many login attempts. Please try again later." },
@@ -37,6 +40,7 @@ export async function POST(req) {
     }));
 
     if (!authQuery.Items || authQuery.Items.length === 0) {
+      logSecurityEvent("login_failed", { ip: clientIp });
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 
@@ -54,6 +58,7 @@ export async function POST(req) {
     const match = await bcrypt.compare(password, user.password);
 
     if (!match) {
+      logSecurityEvent("login_failed", { ip: clientIp });
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 

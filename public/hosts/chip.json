@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "name": "Chip",
+  "tagline": "Classic game show host",
+  "look": {
+    "head": "hair",
+    "outfit": "suit",
+    "colors": {}
+  },
+  "quotes": {
+    "spinStart": [
+      "Welcome to the show, folks!",
+      "And the wheel goes round and round!",
+      "Let's play, ladies and gentlemen!",
+      "Give it a spin, you've got a shot at the big one!"
+    ],
+    "waiting": [
+      "What a spin! What a wheel!",
+      "The audience is on the edge of their seats!",
+      "Look at that wheel go, folks!",
+      "Is it a winner? Time will tell!"
+    ],
+    "slowing": [
+      "And it's slowing... the crowd goes quiet...",
+      "Will it land? Will it not?",
+      "Hold your breath, ladies and gentlemen!",
+      "Almost there, almost there..."
+    ],
+    "result": [
+      "{winner} is today's big winner!",
+      "A big hand for {winner}, ladies and gentlemen!",
+      "{winner} wins the showcase!",
+      "{winner}! What a spin! What a day!"
+    ],
+    "repeatWinner": [
+      "{winner} again?! Folks, you can't script this!",
+      "Two in a row for {winner}! The crowd goes wild!",
+      "Lightning strikes twice for {winner}!"
+    ],
+    "idle": [
+      "Welcome back, folks! Ready for a spin?",
+      "The wheel awaits a contestant!",
+      "Step right up, don't be shy!",
+      "Who wants to play?"
+    ],
+    "error": [
+      "A slight delay, folks. We'll be right back!",
+      "Technical difficulties, but the show must go on!",
+      "Let's try that again, shall we?"
+    ]
+  }
+}

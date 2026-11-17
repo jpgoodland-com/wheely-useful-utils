@@ -17,7 +17,10 @@ jest.mock('@/lib/rateLimit', () => ({
   checkRateLimit: jest.fn().mockReturnValue({ allowed: true, resetMs: Date.now() + 1000 })
 }))
 
+jest.mock('@/lib/securityLog', () => ({ logSecurityEvent: jest.fn() }))
+
 const { docClient } = require('@/lib/dynamodb')
+const { logSecurityEvent } = require('@/lib/securityLog')
 const { checkRateLimit } = require('@/lib/rateLimit')
 const bcrypt = require('bcrypt')
 
@@ -94,6 +97,23 @@ describe('POST /api/auth/login', () => {
 
     const res = await POST(makeRequest({ identifier: 'alice', password: 'wrong' }))
     expect(res.status).toBe(401)
+  })
+
+  it('logs a security event for each failed login, without the identifier', async () => {
+    docClient.send.mockResolvedValueOnce({ Items: [] }).mockResolvedValueOnce({ Items: [verifiedUser] })
+    bcrypt.compare.mockResolvedValue(false)
+    const req = (identifier) => new Request('http://localhost/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '203.0.113.9, 10.0.0.1' },
+      body: JSON.stringify({ identifier, password: 'wrong' }),
+    })
+
+    expect((await POST(req('nobody'))).status).toBe(401)
+    expect((await POST(req('alice'))).status).toBe(401)
+    expect(logSecurityEvent.mock.calls).toEqual([
+      ['login_failed', { ip: '203.0.113.9' }],
+      ['login_failed', { ip: '203.0.113.9' }],
+    ])
   })
 
   it('returns 403 when user is not verified', async () => {

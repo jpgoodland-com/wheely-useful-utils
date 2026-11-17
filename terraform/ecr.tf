@@ -9,20 +9,33 @@ resource "aws_ecr_repository" "app" {
   tags = { Name = var.app_name }
 }
 
-# Keep only the 10 most recent images to control storage costs
+# Keep only the 3 most recent images and expire untagged images after 1 day to control storage costs
 resource "aws_ecr_lifecycle_policy" "app" {
   repository = aws_ecr_repository.app.name
 
   policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Retain last 10 images"
-      selection = {
-        tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 10
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images older than 1 day"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = 1
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Retain last 3 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 3
+        }
+        action = { type = "expire" }
       }
-      action = { type = "expire" }
-    }]
+    ]
   })
 }

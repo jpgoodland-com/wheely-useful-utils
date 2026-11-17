@@ -29,3 +29,13 @@ output "ecs_service_name" {
 output "cloudwatch_log_group" {
   value = aws_cloudwatch_log_group.app.name
 }
+
+output "alerts_topic_arn" {
+  description = "SNS topic that receives CloudWatch alarm and ECS event notifications"
+  value       = aws_sns_topic.alerts.arn
+}
+
+output "dashboard_url" {
+  description = "CloudWatch operations dashboard"
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards/dashboard/${aws_cloudwatch_dashboard.operations.dashboard_name}"
+}

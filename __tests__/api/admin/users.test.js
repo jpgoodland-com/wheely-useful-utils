@@ -8,6 +8,10 @@ jest.mock('@/lib/dynamodb', () => ({
 
 jest.mock('@/lib/session', () => ({ getSession: jest.fn() }))
 jest.mock('bcrypt', () => ({ hash: jest.fn().mockResolvedValue('hashed') }))
+jest.mock('@/lib/capacity/store', () => ({
+  ...jest.requireActual('@/lib/capacity/store'),
+  deleteAllCapacityData: jest.fn().mockResolvedValue({ plansDeleted: 0, plansTransferred: 0 }),
+}))
 
 const { docClient } = require('@/lib/dynamodb')
 const { getSession } = require('@/lib/session')
@@ -170,6 +174,20 @@ describe('DELETE /api/admin/users/[userId]', () => {
     const deletes = calls.filter(c => c.constructor.name === 'DeleteCommand').map(c => c.input.Key.PK)
     expect(deletes).toContain('USER#u1')
     expect(deletes).toContain('USER#USERNAME#alice')
+
+    const { deleteAllCapacityData } = require('@/lib/capacity/store')
+    expect(deleteAllCapacityData).toHaveBeenCalledWith('u1', {}, { force: true })
+  })
+
+  it('returns 409 and deletes nothing else when a capacity plan changes concurrently', async () => {
+    getSession.mockResolvedValue(adminSession)
+    docClient.send.mockResolvedValueOnce({ Item: { PK: 'USER#u1', userId: 'u1', username: 'alice' } })
+    const { deleteAllCapacityData, ConflictError } = require('@/lib/capacity/store')
+    deleteAllCapacityData.mockRejectedValueOnce(new ConflictError('Concurrent update'))
+
+    const res = await DELETE(new Request('http://localhost'), makeParams('u1'))
+    expect(res.status).toBe(409)
+    expect(docClient.send).toHaveBeenCalledTimes(1)
   })
 
   it('returns 400 when admin tries to delete themselves', async () => {

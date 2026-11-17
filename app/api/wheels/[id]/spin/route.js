@@ -2,17 +2,7 @@ import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { getSession } from "@/lib/session";
-import crypto from "crypto";
-
-/**
- * Cryptographically secure pseudo-random float in [0, 1).
- * Uses 48 bits of entropy from crypto.randomBytes to avoid PRNG predictability.
- */
-function secureRandomFloat() {
-  const buf = crypto.randomBytes(6);
-  const intVal = buf.readUIntBE(0, 6);
-  return intVal / 0x1000000000000;
-}
+import { secureRandomFloat } from "@/lib/secureRandom";
 
 export async function POST(req, { params }) {
   try {

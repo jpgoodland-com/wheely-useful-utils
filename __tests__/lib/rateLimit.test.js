@@ -22,6 +22,12 @@ describe('checkRateLimit', () => {
     }
   })
 
+  it('flags only the first blocked request in a burst', () => {
+    const flags = []
+    for (let i = 0; i < 8; i++) flags.push(checkRateLimit('key1', 5, 60_000).firstBlocked)
+    expect(flags).toEqual([false, false, false, false, false, true, false, false])
+  })
+
   it('blocks the request that exceeds the limit', () => {
     for (let i = 0; i < 5; i++) checkRateLimit('key1', 5, 60_000)
     const r = checkRateLimit('key1', 5, 60_000)
