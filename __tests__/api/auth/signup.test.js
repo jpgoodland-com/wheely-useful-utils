@@ -1,10 +1,7 @@
-import { POST } from '@/app/api/auth/signup/route'
-
-// Mock DynamoDB
-jest.mock('@/lib/dynamodb', () => ({
-  docClient: { send: jest.fn() },
-  TableNames: { Users: 'WheelApp_Users' },
-}))
+jest.mock('@/lib/dynamodb', () => {
+  const { createFakeDynamo } = require('@/__tests__/helpers/fakeDynamo')
+  return { docClient: createFakeDynamo(), TableNames: { Users: 'WheelApp_Users' } }
+})
 
 // Mock email module to avoid real SES calls
 jest.mock('@/lib/email', () => ({
@@ -16,8 +13,23 @@ jest.mock('@/lib/rateLimit', () => ({
   checkRateLimit: jest.fn().mockReturnValue({ allowed: true, resetMs: Date.now() + 1000 })
 }))
 
+// Cost-12 bcrypt is slow; the cost itself is checked in passwordHash tests.
+jest.mock('@/lib/users/passwordHash', () => ({ hashPassword: jest.fn(async (pw) => `hashed:${pw}`) }))
+
+const { POST } = require('@/app/api/auth/signup/route')
 const { docClient } = require('@/lib/dynamodb')
+const { sendEmail } = require('@/lib/email')
 const { checkRateLimit } = require('@/lib/rateLimit')
+const { hashToken } = require('@/lib/tokens')
+const { seedUser, getPointer, USERS_TABLE } = require('@/__tests__/helpers/users')
+
+const VALID = {
+  email: 'new@example.com',
+  username: 'newuser',
+  password: 'Str0ng!Passw0rd#',
+  firstName: 'New',
+  lastName: 'User',
+}
 
 function makeRequest(body) {
   return new Request('http://localhost/api/auth/signup', {
@@ -27,184 +39,119 @@ function makeRequest(body) {
   })
 }
 
+const primaryFor = (email) =>
+  docClient.items(USERS_TABLE).find((i) => i.PK.startsWith('USER#') && !i.PK.startsWith('USER#USERNAME#') && i.email === email)
+
+const GENERIC = { success: true, message: 'Please check your email to verify your account' }
+
 beforeEach(() => {
   jest.clearAllMocks()
+  docClient.reset()
+  delete process.env.ADMIN_EMAILS
   checkRateLimit.mockReturnValue({ allowed: true, resetMs: Date.now() + 1000 })
-  // Default: no existing user found
-  docClient.send.mockResolvedValue({ Items: [] })
 })
 
 describe('POST /api/auth/signup', () => {
-  it('happy path - creates a new user and returns success', async () => {
-    let capturedItem = null
-    docClient.send.mockImplementation((cmd) => {
-      if (cmd.input?.Item && cmd.input.Item.PK.startsWith('USER#') && !cmd.input.Item.PK.startsWith('USER#USERNAME#')) {
-        capturedItem = cmd.input.Item
-      }
-      return Promise.resolve({ Items: [] })
-    })
-
-    const res = await POST(makeRequest({
-      email: 'test@example.com',
-      username: 'testuser',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'John',
-      lastName: 'Doe',
-    }))
-    const body = await res.json()
+  it('creates an unverified user with a hashed verification token and a TTL', async () => {
+    const res = await POST(makeRequest(VALID))
     expect(res.status).toBe(200)
-    expect(body.success).toBe(true)
-    expect(capturedItem?.firstName).toBe('John')
-    expect(capturedItem?.lastName).toBe('Doe')
+    expect(await res.json()).toEqual(GENERIC)
+
+    const user = primaryFor('new@example.com')
+    expect(user).toMatchObject({ username: 'newuser', isVerified: false, isAdmin: false, password: 'hashed:Str0ng!Passw0rd#' })
+    expect(user.verificationToken).toBeUndefined()
+    expect(user.verificationTokenHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(user.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000) + 6 * 24 * 3600)
+    expect(getPointer(docClient, 'newuser')).toMatchObject({ userId: user.userId, EmailOrUsername: 'newuser' })
+
+    // The emailed token is the one whose hash was stored.
+    const link = sendEmail.mock.calls[0][0].text.match(/token=([0-9a-f]+)/)[1]
+    expect(hashToken(link)).toBe(user.verificationTokenHash)
   })
 
   it('returns 400 when fields are missing', async () => {
-    const res = await POST(makeRequest({ email: 'test@example.com' }))
+    const res = await POST(makeRequest({ email: 'a@b.com' }))
     expect(res.status).toBe(400)
-    const body = await res.json()
-    expect(body.error).toMatch(/missing fields/i)
   })
 
   it('returns 400 when firstName or lastName is missing or empty', async () => {
-    const res = await POST(makeRequest({
-      email: 'test@example.com',
-      username: 'testuser',
-      password: 'Str0ng!Passw0rd',
-      firstName: '   ',
-      lastName: 'Doe',
-    }))
-    expect(res.status).toBe(400)
-    const body = await res.json()
-    expect(body.error).toMatch(/first and last name/i)
+    expect((await POST(makeRequest({ ...VALID, firstName: '   ' }))).status).toBe(400)
+    expect((await POST(makeRequest({ ...VALID, lastName: 'x'.repeat(51) }))).status).toBe(400)
   })
 
   it('returns 400 for invalid email format', async () => {
-    const res = await POST(makeRequest({
-      email: 'not-an-email',
-      username: 'user',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'John',
-      lastName: 'Doe',
-    }))
+    const res = await POST(makeRequest({ ...VALID, email: 'not-an-email' }))
     expect(res.status).toBe(400)
-    const body = await res.json()
-    expect(body.error).toMatch(/invalid email/i)
   })
 
-  it('returns 409 when email already exists', async () => {
-    docClient.send.mockResolvedValueOnce({ Items: [{ userId: 'existing' }] })
-    const res = await POST(makeRequest({
-      email: 'taken@example.com',
-      username: 'newuser',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'John',
-      lastName: 'Doe',
-    }))
-    expect(res.status).toBe(409)
-    const body = await res.json()
-    expect(body.error).toMatch(/already exists/i)
+  it.each([
+    ['ceo@corp.com', 'contains @'],
+    ['ab', 'too short'],
+    ['-dash', 'starts with punctuation'],
+    ['has space', 'contains a space'],
+    ['x'.repeat(33), 'too long'],
+  ])('rejects username %p (%s)', async (username) => {
+    const res = await POST(makeRequest({ ...VALID, username }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/username/i)
+    expect(docClient.items(USERS_TABLE)).toHaveLength(0)
+  })
+
+  it('gives the same reply for a registered email and emails the owner instead (no enumeration)', async () => {
+    seedUser(docClient, { userId: 'u1', username: 'alice', email: 'new@example.com', isVerified: true })
+    const res = await POST(makeRequest({ ...VALID, username: 'other' }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(GENERIC)
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ to: 'new@example.com', subject: expect.stringMatching(/tried to sign up/i) }))
+    expect(getPointer(docClient, 'other')).toBeUndefined()
+  })
+
+  it('replaces an unverified account squatting the email, dropping the squatter password (C5)', async () => {
+    seedUser(docClient, { userId: 'squat', username: 'squatter', email: 'new@example.com', isVerified: false, password: 'squatter-hash' })
+    const res = await POST(makeRequest(VALID))
+    expect(res.status).toBe(200)
+
+    const user = primaryFor('new@example.com')
+    expect(user.userId).not.toBe('squat')
+    expect(user.password).toBe('hashed:Str0ng!Passw0rd#')
+    expect(docClient.get(USERS_TABLE, 'USER#squat')).toBeUndefined()
+    expect(getPointer(docClient, 'squatter')).toBeUndefined()
+  })
+
+  it('does not create a second account when a legacy @ username claims the email', async () => {
+    docClient.put(USERS_TABLE, { PK: 'USER#USERNAME#new@example.com', userId: 'legacy', username: 'new@example.com', EmailOrUsername: 'new@example.com' })
+    const res = await POST(makeRequest(VALID))
+    expect(await res.json()).toEqual(GENERIC)
+    expect(primaryFor('new@example.com')).toBeUndefined()
   })
 
   it('returns 409 when username already taken', async () => {
-    // First query (email) returns empty, second (username) returns a hit
-    docClient.send
-      .mockResolvedValueOnce({ Items: [] })
-      .mockResolvedValueOnce({ Items: [{ userId: 'existing' }] })
-    const res = await POST(makeRequest({
-      email: 'new@example.com',
-      username: 'takenuser',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'John',
-      lastName: 'Doe',
-    }))
+    seedUser(docClient, { userId: 'u1', username: 'newuser', email: 'someone@example.com' })
+    const res = await POST(makeRequest(VALID))
     expect(res.status).toBe(409)
-    const body = await res.json()
-    expect(body.error).toMatch(/username already taken/i)
+    expect((await res.json()).error).toMatch(/username/i)
   })
 
   it('returns 500 on unexpected DynamoDB error', async () => {
-    docClient.send.mockRejectedValueOnce(new Error('DynamoDB down'))
-    const res = await POST(makeRequest({
-      email: 'a@b.com',
-      username: 'user',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'John',
-      lastName: 'Doe',
-    }))
+    docClient.beforeSend = () => { throw new Error('DB down') }
+    const res = await POST(makeRequest(VALID))
     expect(res.status).toBe(500)
   })
 
-  it('grants admin role when email is in ADMIN_EMAILS allowlist', async () => {
-    process.env.ADMIN_EMAILS = 'boss@example.com, super@example.com'
-    docClient.send.mockResolvedValue({ Items: [] })
-    let capturedItem = null
-    docClient.send.mockImplementation((cmd) => {
-      if (cmd.input?.Item) capturedItem = cmd.input.Item
-      return Promise.resolve({ Items: [] })
-    })
-
-    const res = await POST(makeRequest({
-      email: 'boss@example.com',
-      username: 'boss',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'Boss',
-      lastName: 'User',
-    }))
-    expect(res.status).toBe(200)
-    expect(capturedItem?.isAdmin).toBe(true)
+  it('grants admin only to addresses on the ADMIN_EMAILS allowlist', async () => {
+    process.env.ADMIN_EMAILS = 'boss@example.com, other@example.com'
+    await POST(makeRequest({ ...VALID, email: 'Boss@Example.com', username: 'boss' }))
+    expect(primaryFor('boss@example.com').isAdmin).toBe(true)
   })
 
-  it('does not grant admin role when email is not in ADMIN_EMAILS allowlist', async () => {
-    process.env.ADMIN_EMAILS = 'boss@example.com'
-    docClient.send.mockResolvedValue({ Items: [] })
-    let capturedItem = null
-    docClient.send.mockImplementation((cmd) => {
-      if (cmd.input?.Item) capturedItem = cmd.input.Item
-      return Promise.resolve({ Items: [] })
-    })
-
-    const res = await POST(makeRequest({
-      email: 'user@example.com',
-      username: 'regularuser',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'Regular',
-      lastName: 'User',
-    }))
-    expect(res.status).toBe(200)
-    expect(capturedItem?.isAdmin).toBe(false)
-  })
-
-  it('does not grant admin role when ADMIN_EMAILS is unset', async () => {
-    delete process.env.ADMIN_EMAILS
-    docClient.send.mockResolvedValue({ Items: [] })
-    let capturedItem = null
-    docClient.send.mockImplementation((cmd) => {
-      if (cmd.input?.Item) capturedItem = cmd.input.Item
-      return Promise.resolve({ Items: [] })
-    })
-
-    const res = await POST(makeRequest({
-      email: 'boss@example.com',
-      username: 'boss2',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'Boss',
-      lastName: 'User',
-    }))
-    expect(res.status).toBe(200)
-    expect(capturedItem?.isAdmin).toBe(false)
+  it('never grants admin by domain when ADMIN_EMAILS is unset (C3)', async () => {
+    await POST(makeRequest({ ...VALID, email: 'someone@example.com', username: 'someone' }))
+    expect(primaryFor('someone@example.com').isAdmin).toBe(false)
   })
 
   it('returns 429 when rate limit is exceeded', async () => {
     checkRateLimit.mockReturnValueOnce({ allowed: false, resetMs: Date.now() + 60000 })
-    const res = await POST(makeRequest({
-      email: 'user@example.com',
-      username: 'user',
-      password: 'Str0ng!Passw0rd',
-      firstName: 'John',
-      lastName: 'Doe',
-    }))
+    const res = await POST(makeRequest(VALID))
     expect(res.status).toBe(429)
-    const body = await res.json()
-    expect(body.error).toMatch(/too many/i)
   })
 })

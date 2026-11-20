@@ -69,5 +69,14 @@ describe('Infrastructure & Database Schema Parity Tests', () => {
 
     expect(initDbContent).toContain('IndexName: "UserIdIndex"')
     expect(initDbContent).toContain('AttributeName: "userId"')
+
+    // 4. ScopeIndex on Audit (hash scope, range ts)
+    const auditTable = tfTables.find((t) => t.name === 'audit')
+    expect(auditTable).toBeDefined()
+    expect(auditTable.content).toContain('name            = "ScopeIndex"')
+    expect(auditTable.content).toContain('hash_key        = "scope"')
+    expect(auditTable.content).toContain('range_key       = "ts"')
+    expect(initDbContent).toContain('IndexName: "ScopeIndex"')
+    expect(initDbContent).toMatch(/AttributeName: "ts", KeyType: "RANGE"/)
   })
 })

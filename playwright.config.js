@@ -49,8 +49,9 @@ module.exports = defineConfig({
       AWS_ACCESS_KEY_ID: "fakeMyKeyId",
       AWS_SECRET_ACCESS_KEY: "fakeSecretAccessKey",
       DYNAMODB_ENDPOINT,
-      JWT_SECRET: "e2e_only_jwt_secret_not_used_anywhere_else",
       OAUTH_MOCK: "true",
+      // No calls to Have I Been Pwned from CI.
+      BREACHED_PASSWORD_CHECK: "off",
       ADMIN_EMAILS: "e2e-admin@example.com",
       DONATION_URL: "https://example.com/donate",
     },

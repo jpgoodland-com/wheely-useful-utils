@@ -1,5 +1,6 @@
 import { DELETE } from '@/app/api/auth/delete-account/route'
 
+jest.mock('@/lib/audit', () => ({ recordAudit: jest.fn(async () => ({})) }))
 jest.mock('@/lib/dynamodb', () => ({
   docClient: { send: jest.fn() },
   TableNames: { Users: 'WheelApp_Users', Wheels: 'WheelApp_Wheels' },
@@ -9,7 +10,9 @@ jest.mock('@/lib/email', () => ({
   sendEmail: jest.fn().mockResolvedValue(undefined),
 }))
 
-jest.mock('@/lib/session', () => ({ getSession: jest.fn() }))
+jest.mock('@/lib/session', () => ({ ...jest.requireActual('@/lib/session'), getSession: jest.fn() }))
+jest.mock('@/lib/sessions/store', () => ({ ...jest.requireActual('@/lib/sessions/store'), revokeAllSessions: jest.fn().mockResolvedValue(0) }))
+
 
 jest.mock('@/lib/capacity/store', () => ({
   ...jest.requireActual('@/lib/capacity/store'),
@@ -20,7 +23,7 @@ const { docClient } = require('@/lib/dynamodb')
 const { getSession } = require('@/lib/session')
 const { deleteAllCapacityData, DecisionRequiredError } = require('@/lib/capacity/store')
 
-const session = { userId: 'u1', username: 'alice', email: 'alice@example.com' }
+const session = { userId: 'u1', username: 'alice', email: 'alice@example.com', authAt: Date.now() }
 
 const existingWheels = [
   { PK: 'WHEEL#w1', wheelId: 'w1', name: 'My Wheel', ownerId: 'u1' },
@@ -42,6 +45,14 @@ beforeEach(() => {
 })
 
 describe('DELETE /api/auth/delete-account', () => {
+  it('requires a recent re-authentication and deletes nothing without it (H4)', async () => {
+    getSession.mockResolvedValue({ ...session, authAt: Date.now() - 11 * 60 * 1000 })
+    const res = await DELETE(makeRequest())
+    expect(res.status).toBe(401)
+    expect((await res.json()).reauthRequired).toBe(true)
+    expect(docClient.send).not.toHaveBeenCalled()
+  })
+
   it('returns 401 when not authenticated', async () => {
     getSession.mockResolvedValue(null)
     const res = await DELETE(makeRequest())
@@ -76,7 +87,11 @@ describe('DELETE /api/auth/delete-account', () => {
 
     // Verify cookie cleared
     const cookie = res.headers.get('set-cookie')
-    expect(cookie).toMatch(/auth_token/)
+    expect(cookie).toMatch(/(^|, )session=;/)
+    const { revokeAllSessions } = require('@/lib/sessions/store')
+    expect(revokeAllSessions).toHaveBeenCalledWith('u1')
+    const { recordAudit } = require('@/lib/audit')
+    expect(recordAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'account.deleted', actorUserId: 'u1' }))
     expect(cookie).toMatch(/max-age=0/i)
 
     // Verify compliance logging
@@ -95,7 +110,7 @@ describe('DELETE /api/auth/delete-account', () => {
   })
 
   it('skips username deletion if username is absent in session', async () => {
-    getSession.mockResolvedValue({ userId: 'u2' })
+    getSession.mockResolvedValue({ userId: 'u2', authAt: Date.now() })
     
     docClient.send.mockImplementation(async (command) => {
       if (command.constructor.name === 'QueryCommand' || command.input?.IndexName === 'OwnerIdIndex') return { Items: [] }

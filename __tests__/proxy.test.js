@@ -176,11 +176,19 @@ describe('proxy - per-route tiers', () => {
 })
 
 describe('proxy - IP extraction', () => {
-  it('uses the first IP in a comma-separated x-forwarded-for', () => {
+  it('uses the last (ALB-appended) IP in a comma-separated x-forwarded-for', () => {
     allowAll()
     proxy(makeRequest('/api/wheels', { xff: '10.0.0.1, 10.0.0.2, 10.0.0.3' }))
     const keys = checkRateLimit.mock.calls.map(([key]) => key)
-    expect(keys.every(k => k.includes('10.0.0.1'))).toBe(true)
+    expect(keys.every(k => k.includes('10.0.0.3'))).toBe(true)
+  })
+
+  it('does not give a fresh bucket when the client rotates the spoofable XFF prefix (H2)', () => {
+    allowAll()
+    proxy(makeRequest('/api/auth/login', { xff: '1.1.1.1, 203.0.113.5' }))
+    proxy(makeRequest('/api/auth/login', { xff: '2.2.2.2, 203.0.113.5' }))
+    const keys = new Set(checkRateLimit.mock.calls.map(([key]) => key))
+    expect([...keys].every(k => k.endsWith(':203.0.113.5'))).toBe(true)
   })
 
   it('falls back to "local" when no x-forwarded-for header is present', () => {
@@ -318,5 +326,14 @@ describe('proxy - ALB health check', () => {
     expect(proxy(makeRequest(pathname, { protocol: 'http' })).status).toBe(301)
     proxy(makeRequest(pathname, { protocol: 'https' }))
     expect(checkRateLimit).toHaveBeenCalled()
+  })
+})
+
+describe('proxy - rate limit accounting', () => {
+  it('counts each request once per tier (the header reuses the check)', () => {
+    allowAll()
+    proxy(makeRequest('/api/wheels/abc/spin'))
+    const keys = checkRateLimit.mock.calls.map(([key]) => key.split(':')[0])
+    expect(keys).toEqual(['global', 'spin'])
   })
 })

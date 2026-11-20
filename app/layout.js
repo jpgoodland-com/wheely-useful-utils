@@ -2,13 +2,17 @@ import "./globals.css";
 import { Navigation } from "@/components/Navigation";
 import { AuthProvider } from "@/lib/AuthContext";
 import Link from "next/link";
+import { connection } from "next/server";
 
 export const metadata = {
   title: "Wheely Useful Utils!",
   description: "A toolkit of randomised decision-making utilities — spin wheels, pick from lists, generate teams, and more.",
 };
 
-export default function RootLayout({ children }) {
+export default async function RootLayout({ children }) {
+  // Render per request: the CSP nonce from proxy.js only reaches pages that
+  // are rendered dynamically, never prerendered ones.
+  await connection();
   return (
     <html lang="en">
       <body style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>

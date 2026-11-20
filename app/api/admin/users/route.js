@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
-import { ScanCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { ScanCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { getSession } from "@/lib/session";
-import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { validatePassword } from "@/lib/password";
+import { BREACHED_MESSAGE, isBreachedPassword } from "@/lib/users/breachedPassword";
+import { EMAIL_RE, isKeyTaken, normalizeEmail, normalizeUsername, usernameError } from "@/lib/users/identity";
+import { hashPassword } from "@/lib/users/passwordHash";
+import { recordAudit } from "@/lib/audit";
+import { logSecurityEvent } from "@/lib/securityLog";
 
 async function requireAdmin() {
   const session = await getSession();
@@ -32,7 +36,8 @@ export async function GET() {
 
 // POST /api/admin/users — create a user directly (pre-verified, no email sent)
 export async function POST(req) {
-  if (!await requireAdmin()) {
+  const admin = await requireAdmin();
+  if (!admin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -49,9 +54,13 @@ export async function POST(req) {
     return NextResponse.json({ error: "Last name must be at most 50 characters" }, { status: 400 });
   }
 
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
+  if (typeof email !== "string" || !EMAIL_RE.test(normalizeEmail(email))) {
     return NextResponse.json({ error: "Invalid email format" }, { status: 400 });
+  }
+
+  const badUsername = usernameError(username);
+  if (badUsername) {
+    return NextResponse.json({ error: badUsername }, { status: 400 });
   }
 
   // L5: Validate password strength (same rules as regular signup)
@@ -63,39 +72,28 @@ export async function POST(req) {
     );
   }
 
-  // Check email uniqueness
-  const existingEmail = await docClient.send(new QueryCommand({
-    TableName: TableNames.Users,
-    IndexName: "EmailOrUsernameIndex",
-    KeyConditionExpression: "EmailOrUsername = :v",
-    ExpressionAttributeValues: { ":v": email.toLowerCase() },
-  }));
-  if (existingEmail.Items?.length > 0) {
-    return NextResponse.json({ error: "Email already in use" }, { status: 409 });
+  if (await isBreachedPassword(password)) {
+    return NextResponse.json({ error: BREACHED_MESSAGE }, { status: 400 });
   }
 
-  // Check username uniqueness
-  const existingUsername = await docClient.send(new QueryCommand({
-    TableName: TableNames.Users,
-    IndexName: "EmailOrUsernameIndex",
-    KeyConditionExpression: "EmailOrUsername = :v",
-    ExpressionAttributeValues: { ":v": username.toLowerCase() },
-  }));
-  if (existingUsername.Items?.length > 0) {
+  if (await isKeyTaken(normalizeEmail(email))) {
+    return NextResponse.json({ error: "Email already in use" }, { status: 409 });
+  }
+  if (await isKeyTaken(normalizeUsername(username))) {
     return NextResponse.json({ error: "Username already taken" }, { status: 409 });
   }
 
-  const hashedPassword = await bcrypt.hash(password, 10);
+  const hashedPassword = await hashPassword(password);
   const userId = crypto.randomUUID();
 
   const userItem = {
     PK: `USER#${userId}`,
     userId,
-    email: email.toLowerCase(),
-    username: username.toLowerCase(),
+    email: normalizeEmail(email),
+    username: normalizeUsername(username),
     firstName: firstName ? firstName.trim() : null,
     lastName: lastName ? lastName.trim() : null,
-    EmailOrUsername: email.toLowerCase(),
+    EmailOrUsername: normalizeEmail(email),
     password: hashedPassword,
     isVerified: true, // admin-created users are pre-verified
     isAdmin: !!isAdmin,
@@ -105,8 +103,14 @@ export async function POST(req) {
   await docClient.send(new PutCommand({ TableName: TableNames.Users, Item: userItem }));
   await docClient.send(new PutCommand({
     TableName: TableNames.Users,
-    Item: { ...userItem, PK: `USER#USERNAME#${username.toLowerCase()}`, EmailOrUsername: username.toLowerCase() },
+    Item: { ...userItem, PK: `USER#USERNAME#${normalizeUsername(username)}`, EmailOrUsername: normalizeUsername(username) },
   }));
+
+  await recordAudit(req, { action: "admin.user_created", actorUserId: admin.userId, actorType: "admin", targetUserId: userId });
+  if (userItem.isAdmin) {
+    await recordAudit(req, { action: "admin.role_granted", actorUserId: admin.userId, actorType: "admin", targetUserId: userId });
+    logSecurityEvent("admin_role_changed", { granted: true });
+  }
 
   const { password: _, ...safeUser } = userItem;
   return NextResponse.json(safeUser);

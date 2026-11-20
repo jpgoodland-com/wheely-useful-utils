@@ -22,8 +22,9 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
 }
 
 resource "aws_cloudwatch_log_group" "app" {
-  name              = "/ecs/${var.app_name}"
-  retention_in_days = 7
+  name = "/ecs/${var.app_name}"
+  # One year: SOC 2 / ISO 27001 auditors expect a year of security logs.
+  retention_in_days = 365
 }
 
 resource "aws_ecs_task_definition" "app" {
@@ -56,14 +57,11 @@ resource "aws_ecs_task_definition" "app" {
       { name = "OAUTH_GITHUB_CLIENT_ID", value = var.oauth_github_client_id },
       { name = "ADMIN_EMAILS", value = var.admin_emails },
       { name = "DONATION_URL", value = var.donation_url },
+      { name = "APP_KMS_KEY_ID", value = aws_kms_key.app.arn },
     ]
 
     # Secrets are injected from Secrets Manager — never appear in plaintext
     secrets = [
-      {
-        name      = "JWT_SECRET"
-        valueFrom = aws_secretsmanager_secret.jwt_secret.arn
-      },
       {
         name      = "OAUTH_GOOGLE_CLIENT_SECRET"
         valueFrom = aws_secretsmanager_secret.oauth_google.arn

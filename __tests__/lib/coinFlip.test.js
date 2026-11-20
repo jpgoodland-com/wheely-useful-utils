@@ -141,15 +141,27 @@ describe("lib/coinFlip", () => {
         return count;
       };
 
+      // Seeded (mulberry32) so the comparison is deterministic: two
+      // independent random samples of 5000 drift by more than the margin
+      // now and then, which made this test fail at random in CI.
+      const seeded = (seed) => () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+
+      const nudgedRand = seeded(20261118);
       const nudgedHist = [];
       for (let i = 0; i < 5000; i++) {
-        nudgedHist.push(tossCoin(nudgedHist));
+        nudgedHist.push(tossCoin(nudgedHist, nudgedRand));
       }
 
-      // Unbiased toss: always 50/50
+      // Unbiased toss: always 50/50, same random stream
+      const unbiasedRand = seeded(20261118);
       const unbiasedHist = [];
       for (let i = 0; i < 5000; i++) {
-        unbiasedHist.push(tossCoin([], () => Math.random()));
+        unbiasedHist.push(tossCoin([], unbiasedRand));
       }
 
       // In an unbiased coin, runs of length >= 6 happen roughly 5000 * (0.5)^5 ≈ 156 times.

@@ -1,8 +1,10 @@
 import { DynamoDBClient, CreateTableCommand, ListTablesCommand } from "@aws-sdk/client-dynamodb";
 
+const endpoint = process.env.DYNAMODB_ENDPOINT || 'http://localhost:8000';
+
 const client = new DynamoDBClient({
   region: process.env.AWS_REGION || 'us-east-1',
-  endpoint: process.env.DYNAMODB_ENDPOINT || 'http://localhost:8000',
+  endpoint,
   credentials: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID || "fakeMyKeyId",
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "fakeSecretAccessKey",
@@ -14,10 +16,25 @@ const TableNames = {
   Wheels: "WheelApp_Wheels",
   CoinFlip: "WheelApp_CoinFlip",
   CapacityPlans: "WheelApp_CapacityPlans",
+  Audit: "WheelApp_Audit",
 };
 
+// DynamoDB Local takes a few seconds to accept connections after its
+// container starts, so retry the first call instead of sleeping up front.
+async function listTables(attempts = Number(process.env.INIT_DB_ATTEMPTS) || 15, delayMs = 1000) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await client.send(new ListTablesCommand({}));
+    } catch (err) {
+      if (attempt >= attempts) throw err;
+      console.log(`Waiting for DynamoDB at ${endpoint} (${attempt}/${attempts})...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 async function init() {
-  const { TableNames: existingTables } = await client.send(new ListTablesCommand({}));
+  const { TableNames: existingTables } = await listTables();
 
   if (!existingTables.includes(TableNames.Users)) {
     console.log(`Creating ${TableNames.Users}...`);
@@ -120,7 +137,42 @@ async function init() {
     }));
   }
 
+  if (!existingTables.includes(TableNames.Audit)) {
+    console.log(`Creating ${TableNames.Audit}...`);
+    await client.send(new CreateTableCommand({
+      TableName: TableNames.Audit,
+      AttributeDefinitions: [
+        { AttributeName: "PK", AttributeType: "S" }, // AUDIT#<ts>#<random>, append-only
+        { AttributeName: "scope", AttributeType: "S" }, // "platform" | "user#<userId>"
+        { AttributeName: "ts", AttributeType: "S" }, // ISO timestamp + random suffix
+      ],
+      KeySchema: [
+        { AttributeName: "PK", KeyType: "HASH" }
+      ],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: "ScopeIndex",
+          KeySchema: [
+            { AttributeName: "scope", KeyType: "HASH" },
+            { AttributeName: "ts", KeyType: "RANGE" }
+          ],
+          Projection: { ProjectionType: "ALL" },
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+        }
+      ],
+      ProvisionedThroughput: {
+        ReadCapacityUnits: 5,
+        WriteCapacityUnits: 5,
+      }
+    }));
+  }
+
   console.log("Database initialized.");
 }
 
-init().catch(console.error);
+// Exit non-zero on failure so docker compose's service_completed_successfully
+// (and anything else waiting on this script) sees it.
+init().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});

@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
 import { checkRateLimit } from '@/lib/rateLimit'
 import { logSecurityEvent } from '@/lib/securityLog'
+import { getClientIp as clientIpFromHeaders } from '@/lib/clientIp'
+import { csrfViolation } from '@/lib/csrf'
+import { API_CSP, newNonce, pageCsp } from '@/lib/csp'
+import { getTrustedBaseUrl } from '@/lib/url'
 
 /**
  * Rate-limit tiers (requests / windowMs):
@@ -30,22 +34,6 @@ const TIERS = {
 // including all subdomains, and allow preloading.
 const HSTS_VALUE = 'max-age=31536000; includeSubDomains; preload'
 
-/**
- * Derive a stable client identifier from the request.
- * x-forwarded-for is the standard header set by proxies/load-balancers.
- * Fall back to a static sentinel so the limiter still works in local dev
- * where no real IP is forwarded.
- */
-function getClientIp(request) {
-  const xff = request.headers.get('x-forwarded-for')
-  if (xff) {
-    // xff may be a comma-separated list; the leftmost is the originating client
-    const raw = xff.split(',')[0].trim()
-    return raw.replace(/[^\w.:-]/g, '').slice(0, 64) || 'local'
-  }
-  return 'local'
-}
-
 function rateLimitedResponse(resetMs) {
   const retryAfterSecs = Math.ceil((resetMs - Date.now()) / 1000)
   return new Response(
@@ -68,6 +56,8 @@ function getTier(pathname) {
     pathname === '/api/auth/forgot-password' ||
     pathname === '/api/auth/reset-password' ||
     pathname === '/api/auth/resend-verification' ||
+    pathname === '/api/auth/reauth' ||
+    pathname === '/api/auth/mfa/verify' ||
     pathname === '/api/admin/invite/accept'
   ) return 'auth-mutate'
 
@@ -130,7 +120,17 @@ export function proxy(request) {
     return new Response(null, { status: 404 })
   }
 
-  const ip = getClientIp(request)
+  const ip = clientIpFromHeaders(request.headers)
+
+  // M2: refuse state-changing requests sent from another site.
+  const csrf = csrfViolation(request, new URL(getTrustedBaseUrl(request)).origin)
+  if (csrf) {
+    logSecurityEvent('csrf_blocked', { reason: csrf, ip })
+    return new Response(JSON.stringify({ error: 'Forbidden' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
 
   // 1. Global circuit-breaker — catches DDoS across all paths
   const global = checkRateLimit(`global:${ip}`, TIERS.global.limit, TIERS.global.windowMs)
@@ -141,17 +141,29 @@ export function proxy(request) {
 
   // 2. Per-route tier — catches DoS / noisy-neighbor on specific endpoints
   const tier = getTier(pathname)
-  if (tier) {
-    const result = checkRateLimit(`${tier}:${ip}`, TIERS[tier].limit, TIERS[tier].windowMs)
-    if (!result.allowed) {
-      if (result.firstBlocked) logSecurityEvent('rate_limited', { tier, ip })
-      return rateLimitedResponse(result.resetMs)
-    }
+  const tierResult = tier ? checkRateLimit(`${tier}:${ip}`, TIERS[tier].limit, TIERS[tier].windowMs) : null
+  if (tierResult && !tierResult.allowed) {
+    if (tierResult.firstBlocked) logSecurityEvent('rate_limited', { tier, ip })
+    return rateLimitedResponse(tierResult.resetMs)
   }
 
-  // Pass rate-limit info downstream as request headers so route handlers
-  // can surface them to clients if desired.
-  const response = NextResponse.next()
+  // M1: pages get a per-request nonce CSP. Next.js reads the policy from the
+  // request headers while rendering and puts the nonce on its scripts.
+  const isApi = pathname.startsWith('/api/')
+  let response
+  if (isApi) {
+    response = NextResponse.next()
+    response.headers.set('Content-Security-Policy', API_CSP)
+  } else {
+    const csp = pageCsp(newNonce(), {
+      dev: process.env.NODE_ENV === 'development',
+      https: process.env.FORCE_HTTPS === 'true',
+    })
+    const requestHeaders = new Headers(request.headers)
+    requestHeaders.set('Content-Security-Policy', csp)
+    response = NextResponse.next({ request: { headers: requestHeaders } })
+    response.headers.set('Content-Security-Policy', csp)
+  }
 
   // ── HSTS ────────────────────────────────────────────────────────────────────
   if (process.env.FORCE_HTTPS === 'true') {
@@ -163,14 +175,15 @@ export function proxy(request) {
   // keep serving stale HTML (and stale feature cards) after a deploy. Force
   // revalidation for pages; hashed /_next/static assets are excluded by the
   // matcher and stay immutable.
-  if (!pathname.startsWith('/api/')) {
+  if (!isApi) {
     response.headers.set('Cache-Control', 'private, no-cache, must-revalidate')
   }
 
-  if (tier) {
-    const result = checkRateLimit(`${tier}:${ip}`, TIERS[tier].limit, TIERS[tier].windowMs)
+  // Reuses the check above: counting the request a second time would halve
+  // every tier's real limit.
+  if (tierResult) {
     response.headers.set('X-RateLimit-Limit', String(TIERS[tier].limit))
-    response.headers.set('X-RateLimit-Remaining', String(result.remaining))
+    response.headers.set('X-RateLimit-Remaining', String(tierResult.remaining))
   }
 
   return response

@@ -6,10 +6,12 @@ import { useAuth } from "@/lib/AuthContext";
 import Link from "next/link";
 import { UserX, ChevronRight } from "lucide-react";
 import { TransferOwnershipDialog } from "@/components/capacity/TransferOwnershipDialog";
+import { useReauth } from "@/components/ReauthDialog";
 
 export default function AccountSettingsPage() {
   const router = useRouter();
   const { user, loading, logoutLocally } = useAuth();
+  const { fetchWithReauth, reauthDialog } = useReauth();
 
   useEffect(() => {
     if (!loading && !user) {
@@ -33,7 +35,7 @@ export default function AccountSettingsPage() {
     setDeleting(true);
     setDeleteError("");
     try {
-      const res = await fetch("/api/auth/delete-account", {
+      const res = await fetchWithReauth("/api/auth/delete-account", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ capacityPlanDecisions }),
@@ -92,6 +94,7 @@ export default function AccountSettingsPage() {
 
   return (
     <div>
+      {reauthDialog}
       <nav className="breadcrumb">
         <Link href="/dashboard">Dashboard</Link>
         <ChevronRight size={14} className="separator" />

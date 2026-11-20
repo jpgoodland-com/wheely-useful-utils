@@ -5,7 +5,8 @@ const nextConfig = {
   // L3: Don't expose server technology via X-Powered-By header
   poweredByHeader: false,
 
-  // H2: Security headers on all responses
+  // H2: Security headers on all responses. The Content-Security-Policy is
+  // set per request in proxy.js, because pages need a fresh nonce.
   async headers() {
     return [
       {
@@ -29,20 +30,6 @@ const nextConfig = {
           {
             key: "X-Permitted-Cross-Domain-Policies",
             value: "none",
-          },
-          {
-            key: "Content-Security-Policy",
-            value: [
-              "default-src 'self'",
-              "base-uri 'self'",
-              "form-action 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-              "font-src 'self' https://fonts.gstatic.com",
-              "img-src 'self' data: blob:",
-              "connect-src 'self'",
-              "frame-ancestors 'none'",
-            ].join("; "),
           },
         ],
       },

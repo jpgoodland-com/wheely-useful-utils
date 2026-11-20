@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
-import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { getSession } from "@/lib/session";
 import crypto from "crypto";
+import { newToken } from "@/lib/tokens";
+import { isKeyTaken } from "@/lib/users/identity";
+import { recordAudit } from "@/lib/audit";
 import { sendEmail } from "@/lib/email";
 import { escapeHtml } from "@/lib/sanitize";
 import { getTrustedBaseUrl } from "@/lib/url";
@@ -35,25 +38,19 @@ export async function POST(req) {
   const loweredEmail = email.toLowerCase();
 
   // Check if user already exists with this email
-  const existing = await docClient.send(new QueryCommand({
-    TableName: TableNames.Users,
-    IndexName: "EmailOrUsernameIndex",
-    KeyConditionExpression: "EmailOrUsername = :v",
-    ExpressionAttributeValues: { ":v": loweredEmail },
-  }));
-
-  if (existing.Items?.length > 0) {
+  if (await isKeyTaken(loweredEmail)) {
     return NextResponse.json({ error: "A user with this email already exists" }, { status: 409 });
   }
 
   // Generate invite token and store it
-  const inviteToken = crypto.randomBytes(32).toString("hex");
+  // Keyed by the token's hash, so the table never holds a usable link.
+  const { token: inviteToken, hash: inviteTokenHash } = newToken();
   const inviteId = crypto.randomUUID();
 
   await docClient.send(new PutCommand({
     TableName: TableNames.Users,
     Item: {
-      PK: `INVITE#${inviteToken}`,
+      PK: `INVITE#${inviteTokenHash}`,
       inviteId,
       email: loweredEmail,
       EmailOrUsername: `invite#${loweredEmail}`,
@@ -73,6 +70,8 @@ export async function POST(req) {
     text: `You've been invited by ${session.username} to join Spin the Wheel!\n\nClick the link below to create your account:\n\n${inviteLink}\n\nThis invitation expires in 7 days.`,
     html: `<p>You've been invited by <strong>${escapeHtml(session.username)}</strong> to join Spin the Wheel!</p><p><a href="${inviteLink}">Accept your invitation</a></p><p>This invitation expires in 7 days.</p>`,
   });
+
+  await recordAudit(req, { action: "admin.invite_sent", actorUserId: session.userId, actorType: "admin" });
 
   return NextResponse.json({ success: true, email: loweredEmail, inviteLink: process.env.DYNAMODB_ENDPOINT ? inviteLink : undefined });
 }

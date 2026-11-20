@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
-import { GetCommand, PutCommand, DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import bcrypt from "bcrypt";
+import { GetCommand, PutCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import crypto from "crypto";
 import { validatePassword } from "@/lib/password";
+import { BREACHED_MESSAGE, isBreachedPassword } from "@/lib/users/breachedPassword";
 import { checkRateLimit } from "@/lib/rateLimit";
+import { getClientIp } from "@/lib/clientIp";
+import { hashToken } from "@/lib/tokens";
+import { isAllowlistedAdmin } from "@/lib/users/adminAllowlist";
+import { isKeyTaken, normalizeUsername, usernameError } from "@/lib/users/identity";
+import { hashPassword } from "@/lib/users/passwordHash";
 
 // GET /api/admin/invite/accept?token=xxx — validate an invite token and return the email
 export async function GET(req) {
-  const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
+  const ip = getClientIp(req.headers);
   const { allowed, resetMs } = checkRateLimit(`invite-check:${ip}`, 20, 15 * 60 * 1000);
   if (!allowed) {
     const retryAfterSecs = Math.ceil((resetMs - Date.now()) / 1000);
@@ -21,13 +26,13 @@ export async function GET(req) {
   const { searchParams } = new URL(req.url);
   const token = searchParams.get("token");
 
-  if (!token) {
+  if (!token || typeof token !== "string") {
     return NextResponse.json({ error: "Missing invite token" }, { status: 400 });
   }
 
   const { Item: invite } = await docClient.send(new GetCommand({
     TableName: TableNames.Users,
-    Key: { PK: `INVITE#${token}` },
+    Key: { PK: `INVITE#${hashToken(token)}` },
   }));
 
   if (!invite) {
@@ -47,7 +52,7 @@ export async function GET(req) {
 // POST /api/admin/invite/accept — accept an invite, create the account
 export async function POST(req) {
   try {
-    const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
+    const ip = getClientIp(req.headers);
     const { allowed, resetMs } = checkRateLimit(`invite-accept:${ip}`, 10, 15 * 60 * 1000);
     if (!allowed) {
       const retryAfterSecs = Math.ceil((resetMs - Date.now()) / 1000);
@@ -59,9 +64,15 @@ export async function POST(req) {
 
     const { token, username, password, firstName, lastName } = await req.json();
 
-    if (!token || !username || !password) {
+    if (!token || !username || !password || typeof token !== "string" || typeof password !== "string") {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
     }
+
+    const badUsername = usernameError(username);
+    if (badUsername) {
+      return NextResponse.json({ error: badUsername }, { status: 400 });
+    }
+    const normalizedUsername = normalizeUsername(username);
 
     if (firstName && (typeof firstName !== "string" || firstName.trim().length === 0 || firstName.trim().length > 50)) {
       return NextResponse.json({ error: "First name must be between 1 and 50 characters" }, { status: 400 });
@@ -80,10 +91,14 @@ export async function POST(req) {
       );
     }
 
+    if (await isBreachedPassword(password)) {
+      return NextResponse.json({ error: BREACHED_MESSAGE }, { status: 400 });
+    }
+
     // Look up the invite
     const { Item: invite } = await docClient.send(new GetCommand({
       TableName: TableNames.Users,
-      Key: { PK: `INVITE#${token}` },
+      Key: { PK: `INVITE#${hashToken(token)}` },
     }));
 
     if (!invite) {
@@ -96,53 +111,30 @@ export async function POST(req) {
 
     const email = invite.email;
 
-    // Check email isn't already registered
-    const existingEmail = await docClient.send(new QueryCommand({
-      TableName: TableNames.Users,
-      IndexName: "EmailOrUsernameIndex",
-      KeyConditionExpression: "EmailOrUsername = :v",
-      ExpressionAttributeValues: { ":v": email },
-    }));
-
-    // Filter out invite pointer items
-    const realUsers = (existingEmail.Items || []).filter(i => !i.PK.startsWith("INVITE#"));
-    if (realUsers.length > 0) {
+    if (await isKeyTaken(email)) {
       return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
     }
 
-    // Check username uniqueness
-    const existingUsername = await docClient.send(new QueryCommand({
-      TableName: TableNames.Users,
-      IndexName: "EmailOrUsernameIndex",
-      KeyConditionExpression: "EmailOrUsername = :v",
-      ExpressionAttributeValues: { ":v": username.toLowerCase() },
-    }));
-
-    const realUsernameUsers = (existingUsername.Items || []).filter(i => !i.PK.startsWith("INVITE#"));
-    if (realUsernameUsers.length > 0) {
+    if (await isKeyTaken(normalizedUsername)) {
       return NextResponse.json({ error: "Username already taken" }, { status: 409 });
     }
 
     // Create the user (pre-verified since they were invited)
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await hashPassword(password);
     const userId = crypto.randomUUID();
-
-    // Admin check via env var allowlist
-    const adminEmails = process.env.ADMIN_EMAILS;
-    const isAdmin = adminEmails
-      ? adminEmails.split(",").map(e => e.trim().toLowerCase()).includes(email.toLowerCase())
-      : false;
+    const isAdmin = isAllowlistedAdmin(email);
 
     const userItem = {
       PK: `USER#${userId}`,
       userId,
       email,
-      username: username.toLowerCase(),
+      username: normalizedUsername,
       firstName: firstName ? firstName.trim() : null,
       lastName: lastName ? lastName.trim() : null,
       EmailOrUsername: email,
       password: hashedPassword,
       isVerified: true,
+      emailVerifiedAt: new Date().toISOString(),
       isAdmin,
       invitedBy: invite.invitedBy,
       createdAt: new Date().toISOString(),
@@ -159,15 +151,15 @@ export async function POST(req) {
       TableName: TableNames.Users,
       Item: {
         ...userItem,
-        PK: `USER#USERNAME#${username.toLowerCase()}`,
-        EmailOrUsername: username.toLowerCase(),
+        PK: `USER#USERNAME#${normalizedUsername}`,
+        EmailOrUsername: normalizedUsername,
       },
     }));
 
     // Delete the invite token (single-use)
     await docClient.send(new DeleteCommand({
       TableName: TableNames.Users,
-      Key: { PK: `INVITE#${token}` },
+      Key: { PK: `INVITE#${hashToken(token)}` },
     }));
 
     return NextResponse.json({ success: true, message: "Account created successfully! You can now log in." });

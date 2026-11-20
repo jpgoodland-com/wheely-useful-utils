@@ -23,10 +23,16 @@ import { POST as spinPost } from "@/app/api/wheels/[id]/spin/route";
 import { proxy } from "@/proxy";
 import nextConfig from "@/next.config.mjs";
 import crypto from "crypto";
+import { hashToken } from "@/lib/tokens";
 
 jest.mock("@/lib/dynamodb", () => ({
   docClient: { send: jest.fn() },
   TableNames: { Users: "WheelApp_Users", Wheels: "WheelApp_Wheels" },
+}));
+
+jest.mock("@/lib/sharedRateLimit", () => ({
+  consumeSharedLimit: jest.fn(async () => ({ allowed: true, remaining: 1, resetMs: Date.now() + 1000 })),
+  retryAfterSeconds: () => "1",
 }));
 
 jest.mock("@/lib/email", () => ({
@@ -34,8 +40,10 @@ jest.mock("@/lib/email", () => ({
 }));
 
 jest.mock("@/lib/session", () => ({
+  ...jest.requireActual("@/lib/session"),
   getSession: jest.fn(),
 }));
+jest.mock("@/lib/sessions/store", () => ({ ...jest.requireActual("@/lib/sessions/store"), revokeAllSessions: jest.fn().mockResolvedValue(0) }))
 
 jest.mock("@/lib/rateLimit", () => ({
   checkRateLimit: jest.fn().mockReturnValue({ allowed: true, remaining: 99, resetMs: Date.now() + 60000 }),
@@ -92,7 +100,7 @@ describe("Security: Host / Origin Header Injection Prevention", () => {
   it("prevents Origin header poisoning in forgot-password reset email", async () => {
     docClient.send
       .mockResolvedValueOnce({
-        Items: [{ PK: "USER#v1", userId: "v1", email: "victim@example.com", username: "victim" }],
+        Items: [{ PK: "USER#v1", userId: "v1", email: "victim@example.com", EmailOrUsername: "victim@example.com", username: "victim" }],
       })
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({});
@@ -119,7 +127,7 @@ describe("Security: Host / Origin Header Injection Prevention", () => {
   it("prevents Origin header poisoning in resend-verification email", async () => {
     docClient.send
       .mockResolvedValueOnce({
-        Items: [{ PK: "USER#v1", userId: "v1", email: "victim@example.com", isVerified: false }],
+        Items: [{ PK: "USER#v1", userId: "v1", email: "victim@example.com", EmailOrUsername: "victim@example.com", isVerified: false }],
       })
       .mockResolvedValueOnce({});
 
@@ -143,7 +151,7 @@ describe("Security: Host / Origin Header Injection Prevention", () => {
   });
 
   it("prevents Origin/Referer header poisoning in admin invitations", async () => {
-    getSession.mockResolvedValue({ userId: "admin1", username: "admin", isAdmin: true });
+    getSession.mockResolvedValue({ userId: "admin1", username: "admin", isAdmin: true, authAt: Date.now() });
     docClient.send
       .mockResolvedValueOnce({ Items: [] })
       .mockResolvedValueOnce({});
@@ -172,7 +180,7 @@ describe("Security: Host / Origin Header Injection Prevention", () => {
 // ── 2. Password Policy Enforcement on Admin Reset ───────────────────────────
 
 describe("Security: Password Policy Enforcement on Admin Reset", () => {
-  const adminSession = { userId: "admin1", isAdmin: true };
+  const adminSession = { userId: "admin1", isAdmin: true, authAt: Date.now() };
 
   beforeEach(() => {
     getSession.mockResolvedValue(adminSession);
@@ -251,7 +259,7 @@ describe("Security: RBAC Privilege Assignment via ADMIN_EMAILS", () => {
 
     let capturedItem = null;
     docClient.send.mockImplementation((cmd) => {
-      if (cmd.input?.Key?.PK === "INVITE#tok1") {
+      if (cmd.input?.Key?.PK === `INVITE#${hashToken("tok1")}`) {
         return Promise.resolve({
           Item: {
             PK: "INVITE#tok1",
@@ -286,7 +294,7 @@ describe("Security: RBAC Privilege Assignment via ADMIN_EMAILS", () => {
 
     let capturedItem = null;
     docClient.send.mockImplementation((cmd) => {
-      if (cmd.input?.Key?.PK === "INVITE#tok2") {
+      if (cmd.input?.Key?.PK === `INVITE#${hashToken("tok2")}`) {
         return Promise.resolve({
           Item: {
             PK: "INVITE#tok2",
@@ -459,6 +467,8 @@ describe("Security: Rate Limiting Tier Assignment in Proxy", () => {
     "/api/auth/forgot-password",
     "/api/auth/reset-password",
     "/api/auth/resend-verification",
+    "/api/auth/reauth",
+    "/api/auth/mfa/verify",
     "/api/admin/invite/accept",
   ];
 
@@ -490,9 +500,7 @@ describe("Security: Defense-in-Depth HTTP Headers", () => {
     expect(getHeader("cross-origin-resource-policy")).toBe("same-origin");
     expect(getHeader("x-permitted-cross-domain-policies")).toBe("none");
 
-    const csp = getHeader("content-security-policy");
-    expect(csp).toContain("base-uri 'self'");
-    expect(csp).toContain("form-action 'self'");
-    expect(csp).toContain("frame-ancestors 'none'");
+    // The CSP is per request (nonce) and set by proxy.js; see csp.test.js.
+    expect(getHeader("content-security-policy")).toBeUndefined();
   });
 });

@@ -37,10 +37,12 @@ describe('Infrastructure Cost Optimization Tests', () => {
       expect(serviceBlock).not.toMatch(/launch_type\s*=\s*"FARGATE"/)
     })
 
-    it('sets CloudWatch log group retention to 7 days to minimize storage costs', () => {
+    // Was 7 days for cost. SOC 2 / ISO 27001 evidence needs a year of
+    // security logs; at this app's log volume that's cents a month.
+    it('keeps CloudWatch app logs for exactly one year (compliance, not longer)', () => {
       const logBlock = getResourceBlock(ecsContent, 'aws_cloudwatch_log_group', 'app')
       expect(logBlock).not.toBeNull()
-      expect(logBlock).toMatch(/retention_in_days\s*=\s*7/)
+      expect(logBlock).toMatch(/retention_in_days\s*=\s*365/)
     })
 
     it('sizes the ECS task appropriately for low baseline spending', () => {
@@ -63,7 +65,7 @@ describe('Infrastructure Cost Optimization Tests', () => {
 
     it('defines all 3 expected application tables', () => {
       const tableNames = tables.map((t) => t.name)
-      expect(tableNames).toEqual(expect.arrayContaining(['users', 'wheels', 'coinflip', 'capacity_plans']))
+      expect(tableNames).toEqual(expect.arrayContaining(['users', 'wheels', 'coinflip', 'capacity_plans', 'audit']))
     })
 
     it('configures every DynamoDB table with PAY_PER_REQUEST (On-Demand) billing mode', () => {

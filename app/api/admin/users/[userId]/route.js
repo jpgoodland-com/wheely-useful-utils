@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
 import { GetCommand, DeleteCommand, UpdateCommand, QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { getSession } from "@/lib/session";
-import bcrypt from "bcrypt";
+import { getSession, requireRecentAuth } from "@/lib/session";
+import { revokeAllSessions } from "@/lib/sessions/store";
+import { recordAudit } from "@/lib/audit";
+import { logSecurityEvent } from "@/lib/securityLog";
+import { hashPassword } from "@/lib/users/passwordHash";
 import { validatePassword } from "@/lib/password";
+import { BREACHED_MESSAGE, isBreachedPassword } from "@/lib/users/breachedPassword";
 import { deleteAllCoinData } from "@/lib/coinStore";
 import { deleteAllCapacityData } from "@/lib/capacity/store";
 import { errorResponse } from "@/lib/capacity/http";
@@ -27,6 +31,9 @@ export async function DELETE(req, { params }) {
     return NextResponse.json({ error: "Cannot delete your own account" }, { status: 400 });
   }
 
+  const stepUp = requireRecentAuth(session);
+  if (stepUp) return stepUp;
+
   const { Item: user } = await docClient.send(new GetCommand({
     TableName: TableNames.Users,
     Key: { PK: `USER#${userId}` },
@@ -42,6 +49,9 @@ export async function DELETE(req, { params }) {
   } catch (error) {
     return errorResponse(error, "Admin user deletion (capacity plans)");
   }
+
+  // Sign the user out everywhere before their data goes.
+  await revokeAllSessions(userId);
 
   // Delete wheels owned by the user
   const wheelRes = await docClient.send(new QueryCommand({
@@ -97,6 +107,8 @@ export async function DELETE(req, { params }) {
     }));
   }
 
+  await recordAudit(req, { action: "admin.user_deleted", actorUserId: session.userId, actorType: "admin", targetUserId: userId });
+
   return NextResponse.json({ success: true });
 }
 
@@ -118,6 +130,10 @@ export async function PATCH(req, { params }) {
   if (typeof isAdmin === "boolean" && userId === session.userId && !isAdmin) {
     return NextResponse.json({ error: "Cannot remove your own admin role" }, { status: 400 });
   }
+
+  // Granting admin or setting someone's password needs a fresh re-auth.
+  const stepUp = requireRecentAuth(session);
+  if (stepUp) return stepUp;
 
   const { Item: user } = await docClient.send(new GetCommand({
     TableName: TableNames.Users,
@@ -143,9 +159,15 @@ export async function PATCH(req, { params }) {
         { status: 400 }
       );
     }
-    const hashed = await bcrypt.hash(newPassword, 10);
-    exprParts.push("password = :pw");
+
+    if (await isBreachedPassword(newPassword)) {
+      return NextResponse.json({ error: BREACHED_MESSAGE }, { status: 400 });
+    }
+
+    const hashed = await hashPassword(newPassword);
+    exprParts.push("password = :pw", "passwordChangedAt = :pca");
     exprValues[":pw"] = hashed;
+    exprValues[":pca"] = new Date().toISOString();
   }
 
   const updateExpr = "SET " + exprParts.join(", ");
@@ -166,6 +188,17 @@ export async function PATCH(req, { params }) {
       UpdateExpression: updateExpr,
       ExpressionAttributeValues: exprValues,
     }));
+  }
+
+  // A password set by an admin signs the user out everywhere.
+  if (newPassword) {
+    await revokeAllSessions(userId);
+    await recordAudit(req, { action: "admin.password_set", actorUserId: session.userId, actorType: "admin", targetUserId: userId });
+    logSecurityEvent("password_changed", { reason: "admin" });
+  }
+  if (typeof isAdmin === "boolean" && isAdmin !== (user.isAdmin === true)) {
+    await recordAudit(req, { action: isAdmin ? "admin.role_granted" : "admin.role_revoked", actorUserId: session.userId, actorType: "admin", targetUserId: userId });
+    logSecurityEvent("admin_role_changed", { granted: isAdmin });
   }
 
   return NextResponse.json({

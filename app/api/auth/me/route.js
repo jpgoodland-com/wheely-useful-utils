@@ -6,5 +6,6 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ user: null });
   }
-  return NextResponse.json({ user: session });
+  const { sessionId: _sid, ...user } = session;
+  return NextResponse.json({ user });
 }

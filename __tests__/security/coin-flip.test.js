@@ -5,7 +5,6 @@ import { PUT as putConfig } from "@/app/api/coin-flip/config/route";
 import { DELETE as deleteUserAccount } from "@/app/api/auth/delete-account/route";
 import { DELETE as adminDeleteUser } from "@/app/api/admin/users/[userId]/route";
 import { proxy } from "@/proxy";
-import nextConfig from "@/next.config.mjs";
 import packageJson from "@/package.json";
 
 jest.mock("@/lib/dynamodb", () => ({
@@ -18,8 +17,10 @@ jest.mock("@/lib/dynamodb", () => ({
 }));
 
 jest.mock("@/lib/session", () => ({
+  ...jest.requireActual("@/lib/session"),
   getSession: jest.fn(),
 }));
+jest.mock("@/lib/sessions/store", () => ({ ...jest.requireActual("@/lib/sessions/store"), revokeAllSessions: jest.fn().mockResolvedValue(0) }))
 
 jest.mock("@/lib/email", () => ({
   sendEmail: jest.fn().mockResolvedValue(undefined),
@@ -158,7 +159,7 @@ describe("Coin Flip Security Hardening", () => {
 
   describe("Account Deletion Cleanup", () => {
     it("deletes user's coin-flip config and history on user self-delete", async () => {
-      getSession.mockResolvedValue({ userId: "u-to-delete", username: "target", email: "target@test.com" });
+      getSession.mockResolvedValue({ userId: "u-to-delete", username: "target", email: "target@test.com", authAt: Date.now() });
       docClient.send.mockResolvedValue({ Items: [] });
 
       const res = await deleteUserAccount(new Request("http://localhost/api/auth/delete-account", { method: "DELETE" }));
@@ -178,7 +179,7 @@ describe("Coin Flip Security Hardening", () => {
     });
 
     it("deletes user's coin-flip config and history on admin user delete", async () => {
-      getSession.mockResolvedValue({ userId: "admin1", username: "admin", isAdmin: true });
+      getSession.mockResolvedValue({ userId: "admin1", username: "admin", isAdmin: true, authAt: Date.now() });
       docClient.send.mockImplementation(async (cmd) => {
         if (cmd.input?.Key?.PK === "USER#victim-user") {
           return { Item: { userId: "victim-user", username: "victim" } };
@@ -207,9 +208,8 @@ describe("Coin Flip Security Hardening", () => {
 
   describe("Static Security Checks", () => {
     it("ensures CSP img-src only permits self, data: and blob: (no external hosts)", async () => {
-      const headers = await nextConfig.headers();
-      const globalHeaderConfig = headers.find((h) => h.source === "/(.*)");
-      const csp = globalHeaderConfig.headers.find((h) => h.key === "Content-Security-Policy").value;
+      const { pageCsp } = require("@/lib/csp");
+      const csp = pageCsp("n");
       const imgSrcMatch = csp.match(/img-src\s+([^;]+)/);
       expect(imgSrcMatch).not.toBeNull();
       const allowedSources = imgSrcMatch[1].trim().split(/\s+/);

@@ -13,11 +13,6 @@ output "alb_dns_name" {
   value       = aws_lb.app.dns_name
 }
 
-output "jwt_secret_name" {
-  description = "Secrets Manager secret name — set the real value with: aws secretsmanager put-secret-value --secret-id <name> --secret-string \"$(openssl rand -hex 32)\""
-  value       = aws_secretsmanager_secret.jwt_secret.name
-}
-
 output "ecs_cluster_name" {
   value = aws_ecs_cluster.main.name
 }

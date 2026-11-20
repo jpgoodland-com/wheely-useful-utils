@@ -18,9 +18,25 @@ Everything above the `END:nextjs-agent-rules` marker is managed by `next dev`; a
 - Plain JavaScript (no TypeScript), `@/` import alias, Vanilla CSS (`app/globals.css` utilities plus CSS Modules). No CSS frameworks.
 - Pages under `app/features/<id>/` are client components: they call `useAuth()` and redirect to `/login` when signed out. Wrap `useSearchParams()` in `<Suspense>`.
 - Route params are a Promise in this Next.js version: `const { id } = await params`.
-- `proxy.js` (Next 16's replacement for middleware) only does HTTPS, HSTS, rate-limit tiers and a 404 for any `Next-Action` header (the app has no Server Actions; remove that check if you add a `"use server"` function). Every API route must call `getSession()` itself, except `GET /api/health` (the ALB health check), which is public, touches no data, and skips the proxy's HTTPS redirect and rate limits.
+- `proxy.js` (Next 16's replacement for middleware) only does HTTPS, HSTS, rate-limit tiers, the CSRF origin check (`lib/csrf.js`: state-changing requests whose `Origin` or `Sec-Fetch-Site` shows another site get a 403), the per-request nonce CSP (`lib/csp.js`; the root layout calls `await connection()` so every page renders with the nonce, and `next.config.mjs` must not set its own CSP) and a 404 for any `Next-Action` header (the app has no Server Actions; remove that check if you add a `"use server"` function). Every API route must call `getSession()` itself, except `GET /api/health` (the ALB health check), which is public, touches no data, and skips the proxy's HTTPS redirect and rate limits.
 - The service runs two Fargate Spot tasks (`desired_count = 2`). Keep per-request state out of process memory. The one exception today is `lib/rateLimit.js`, whose buckets are per task, so a client can get up to twice each limit.
 - API routes: read bodies with `readJsonLimited` (`lib/requestBody.js`); validate by copying known fields into a fresh object and rejecting prototype keys (`lib/objectGuard.js`); map domain errors to 400/403/404/409 and hide anything else behind a 500 `"Internal Error"`.
+
+## Auth and accounts
+
+- Look users up only through `lib/users/identity.js` (`findUserByEmail`, `findUserByUsername`, `findUserByIdentifier`, `isKeyTaken`). Emails and usernames share the `EmailOrUsername` GSI key, and these helpers check the item's role, not just its key. Never take `Items[0]` from that index directly.
+- Usernames must pass `usernameError()` (no `@`). Admin status comes only from `isAllowlistedAdmin()` (`ADMIN_EMAILS`), never from an email domain.
+- Emailed secrets (verification, reset, invites) come from `newToken()` in `lib/tokens.js`; store only the hash and compare with `tokenMatchesHash()`.
+- Hash passwords with `hashPassword()` (`lib/users/passwordHash.js`, bcrypt cost 12).
+- Rate-limit keys and logged IPs come from `getClientIp(headers)` (`lib/clientIp.js`), which uses the ALB-appended rightmost `X-Forwarded-For` entry. Never use the leftmost entry: the client controls it.
+- OAuth only signs in or links with `profile.emailVerified === true`. Linking a provider to an unverified account removes its password first. Mock OAuth never runs when `NODE_ENV=production`.
+- Sessions are server-side (`lib/sessions/store.js`): the `session` cookie (`__Host-session` in production) holds an opaque token, and the Users table holds `SESSION#<sha256(token)>` with `EmailOrUsername = session#<userId>` so the existing GSI lists a user's sessions. `getSession()` reads the session and the user on every request, so `isAdmin`, `disabled` and revocation are always current. Sign users in only with `startSession()`, which also revokes the browser's previous session. Call `revokeAllSessions(userId)` whenever a password is set or reset, or an account is deleted or disabled.
+- Sensitive actions (account deletion, admin grants, admin password resets, user deletion, and later SSO/SCIM/ownership changes) start with `const stepUp = requireRecentAuth(session); if (stepUp) return stepUp;`. On the client, call them with `fetchWithReauth` from `useReauth()` (`components/ReauthDialog.js`) and render its `reauthDialog`.
+- MFA (`lib/mfa/`): factors live on the primary `USER#` item only (`mfaTotp`, `webauthnCredentials`, `mfaRecovery`, with `mfaVersion` as the condition key for every change). A sign-in that passes its first factor for an MFA user gets an `MFACHAL#` challenge and the `mfa_challenge` cookie, never a session; `POST /api/auth/mfa/verify` finishes it. Sessions record `mfa: true`, and `getSession()` only reports `isAdmin` for MFA sessions (`adminMfaRequired` otherwise). Step-up for MFA users needs the second factor too. Secrets such as TOTP seeds go through `lib/crypto/secretBox.js` (KMS `APP_KMS_KEY_ID` in production) with an encryption context naming the owner and purpose.
+- Route tests that mock `@/lib/session` and hit a step-up route must keep the real `requireRecentAuth` (`...jest.requireActual("@/lib/session")`) and give the session a recent `authAt`.
+- Limits that must hold across both tasks, or that key on an account rather than an IP, use `consumeSharedLimit(key, limit, windowMs)` (`lib/sharedRateLimit.js`, hashed `RATE#` items with TTL in the Users table). Sign-in is limited per IP (30) and per typed identifier (10) per 15 minutes; MFA verify and re-auth per user; reset and verification emails per address (3 per hour, silently).
+- New passwords (signup, reset, invite accept, admin create/reset) must pass `isBreachedPassword()` (`lib/users/breachedPassword.js`, HIBP k-anonymity, fails open, off in Jest and e2e).
+- Public auth endpoints must not reveal whether an account exists: use one reply for unknown and known users, and keep email-send failures out of the response.
 
 ## Feature registry
 
@@ -56,6 +72,12 @@ A feature that stores data needs all of these:
 - The chosen host id is saved in `localStorage` (`wheelHost`) and re-checked against the loaded list.
 - Winner names are user data: render quotes as React text, never HTML.
 
+## Audit trail
+
+- Every security or admin action calls `recordAudit(req, { action, actorUserId, actorType, targetUserId, details })` (`lib/audit.js`). Actions must be in `ACTIONS`; admin actions use `actorType: "admin"` (scope `platform`), others land in `user#<id>`. `details` only keeps short ids, enums, numbers and booleans, never emails, tokens or typed text.
+- `WheelApp_Audit` is append-only for the app (IAM allows only PutItem and Query). Admins read it at `GET /api/admin/audit`; users read their own at `GET /api/auth/activity`.
+- `__tests__/security/audit-coverage.test.js` lists which routes must write which actions; add new privileged routes there.
+
 ## Monitoring
 
 - `terraform/monitoring.tf` holds the CloudWatch alarms, SNS email topic and dashboard. New alarms must notify `local.alarm_actions` (alarm and OK) and be listed in the dashboard's alarm widget; `__tests__/infra/terraform-monitoring.test.js` checks both.
@@ -66,5 +88,8 @@ A feature that stores data needs all of these:
 - `npm test` runs Jest. Route tests import handlers directly and mock `@/lib/session`.
 - `__tests__/helpers/fakeDynamo.js` is an in-memory DynamoDB that supports only the commands and condition expressions the app uses, and throws on anything else. Extend it when adding new expressions.
 - Component tests need `/** @jest-environment jsdom */` and `import "@testing-library/jest-dom"` at the top.
-- `DYNAMODB_INTEGRATION=1 npx jest __tests__/integration` runs the capacity store against DynamoDB Local (`docker compose up -d dynamodb-local && node scripts/init-db.mjs`). It only touches items it creates.
+- `DYNAMODB_INTEGRATION=1 npx jest __tests__/integration` runs the capacity store and the auth stores (sessions, shared rate limits, MFA conditions, audit index, username migration) against DynamoDB Local; CI runs it too (`docker compose up -d dynamodb-local && node scripts/init-db.mjs`). It only touches items it creates.
+- `npm run test:coverage` (what CI runs) enforces the gates in `jest.config.js`: a global baseline, and 95% statements/lines/functions plus 85% branches for the security modules (`lib/sessions`, `lib/mfa`, `lib/crypto`, `lib/users`, `lib/oauth.js`, `lib/audit.js`, CSRF/CSP, rate limits, tokens). New security code needs tests that keep those up.
+- Security regressions live in `__tests__/security/`, one suite per finding in the security plan (account takeover, enumeration, token storage, sessions, MFA bypass, CSRF, CSP, rate-limit bypass, audit coverage). Write the failing attack first, then the fix.
+- `__tests__/helpers/jestEnv.js` keeps Jest offline (the breached-password check is off).
 - `npm run test:e2e` runs the Playwright specs in `e2e/` (Chromium, Firefox, WebKit, phone Chrome/Safari) against `next dev` on port 3100 and DynamoDB Local; see `e2e/README.md`. Use the `user` fixture for a fresh signed-in account per test. Jest ignores `e2e/`. CI runs both suites.

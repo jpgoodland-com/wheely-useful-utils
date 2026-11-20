@@ -3,6 +3,7 @@ import { docClient, TableNames } from "@/lib/dynamodb";
 import { ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { getSession } from "@/lib/session";
 import { checkRateLimit } from "@/lib/rateLimit";
+import { getClientIp } from "@/lib/clientIp";
 
 export async function GET(req) {
   try {
@@ -11,7 +12,7 @@ export async function GET(req) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
+    const ip = getClientIp(req.headers);
     const { allowed, resetMs } = checkRateLimit(`user-search:${ip}`, 30, 60 * 1000);
     if (!allowed) {
       const retryAfterSecs = Math.ceil((resetMs - Date.now()) / 1000);

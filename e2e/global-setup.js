@@ -28,8 +28,9 @@ module.exports = async function globalSetup(config) {
     }
   }
 
-  // init-db.mjs is idempotent and logs errors without failing, so check its output.
-  const out = execFileSync(process.execPath, [path.join(__dirname, "..", "scripts", "init-db.mjs")], {
+  // init-db.mjs is idempotent and exits non-zero on failure, which makes
+  // execFileSync throw with its stderr.
+  execFileSync(process.execPath, [path.join(__dirname, "..", "scripts", "init-db.mjs")], {
     env: {
       ...process.env,
       AWS_REGION: serverEnv.AWS_REGION,
@@ -40,9 +41,6 @@ module.exports = async function globalSetup(config) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (!out.includes("Database initialized.")) {
-    throw new Error(`scripts/init-db.mjs did not finish:\n${out}`);
-  }
 
   await warmUp(config.projects[0].use.baseURL);
 };
@@ -58,6 +56,7 @@ const PAGES = [
   "/dashboard",
   "/settings",
   "/settings/account",
+  "/settings/security",
   "/features/coin-flip",
   "/features/wheel",
   "/features/wheel/warm-up",

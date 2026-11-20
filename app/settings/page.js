@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/AuthContext";
 import Link from "next/link";
-import { User, ShieldCheck, ChevronRight } from "lucide-react";
+import { User, ShieldCheck, ChevronRight, KeyRound } from "lucide-react";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -28,6 +28,15 @@ export default function SettingsPage() {
       icon: User,
       href: "/settings/account",
       color: "#3b82f6",
+      show: true,
+    },
+    {
+      id: "security",
+      name: "Security",
+      description: "Two-step verification and where you're signed in.",
+      icon: KeyRound,
+      href: "/settings/security",
+      color: "#10b981",
       show: true,
     },
     {

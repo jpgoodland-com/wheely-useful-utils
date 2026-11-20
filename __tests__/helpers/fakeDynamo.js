@@ -11,8 +11,15 @@ function conditionHolds(item, { ConditionExpression, ExpressionAttributeNames = 
       return !!item && item[ExpressionAttributeNames["#v"]] === ExpressionAttributeValues[":v"];
     case "attribute_not_exists(ownedCount) OR ownedCount < :max":
       return !item || item.ownedCount === undefined || item.ownedCount < ExpressionAttributeValues[":max"];
-    default:
-      throw new Error(`fakeDynamo: unsupported condition "${ConditionExpression}"`);
+    case "attribute_exists(PK)":
+      return !!item;
+    default: {
+      // Single equality on a stored attribute, e.g. "passwordResetTokenHash = :h".
+      const m = /^(#?\w+) = (:\w+)$/.exec(ConditionExpression);
+      if (!m) throw new Error(`fakeDynamo: unsupported condition "${ConditionExpression}"`);
+      const attr = m[1].startsWith("#") ? ExpressionAttributeNames[m[1]] : m[1];
+      return !!item && item[attr] === ExpressionAttributeValues[m[2]];
+    }
   }
 }
 
@@ -28,12 +35,34 @@ export function createFakeDynamo() {
   };
   const clone = (v) => (v === undefined ? undefined : structuredClone(v));
 
-  function applyUpdate(t, { Key, UpdateExpression, ExpressionAttributeValues }) {
-    const m = /^ADD (\w+) (:\w+)$/.exec(UpdateExpression);
-    if (!m) throw new Error(`fakeDynamo: unsupported update "${UpdateExpression}"`);
+  // Supports any mix of "SET a = :x, #b = :y", "ADD n :v" and "REMOVE c, d"
+  // clauses, in any order. Like DynamoDB, a missing item is created.
+  function applyUpdate(t, { Key, UpdateExpression, ExpressionAttributeNames = {}, ExpressionAttributeValues = {} }) {
     const item = t.get(Key.PK) || { ...Key };
-    item[m[1]] = (item[m[1]] || 0) + ExpressionAttributeValues[m[2]];
+    const name = (n) => (n.startsWith("#") ? ExpressionAttributeNames[n] : n);
+    const clauses = [...UpdateExpression.trim().matchAll(/(SET|ADD|REMOVE)\s+(.*?)(?=\s+(?:SET|ADD|REMOVE)\s|$)/g)];
+    if (!clauses.length || clauses.map((c) => c[0]).join(" ").replace(/\s+/g, " ") !== UpdateExpression.trim().replace(/\s+/g, " ")) {
+      throw new Error(`fakeDynamo: unsupported update "${UpdateExpression}"`);
+    }
+    for (const [, kind, body] of clauses) {
+      for (const part of body.split(",")) {
+        if (kind === "SET") {
+          const sm = /^\s*(#?\w+) = (:\w+)\s*$/.exec(part);
+          if (!sm) throw new Error(`fakeDynamo: unsupported SET clause "${part}"`);
+          item[name(sm[1])] = clone(ExpressionAttributeValues[sm[2]]);
+        } else if (kind === "ADD") {
+          const am = /^\s*(#?\w+) (:\w+)\s*$/.exec(part);
+          if (!am) throw new Error(`fakeDynamo: unsupported ADD clause "${part}"`);
+          item[name(am[1])] = (item[name(am[1])] || 0) + ExpressionAttributeValues[am[2]];
+        } else {
+          const attr = part.trim();
+          if (!/^#?\w+$/.test(attr)) throw new Error(`fakeDynamo: unsupported REMOVE clause "${part}"`);
+          delete item[name(attr)];
+        }
+      }
+    }
     t.set(Key.PK, item);
+    return item;
   }
 
   const handlers = {
@@ -56,7 +85,9 @@ export function createFakeDynamo() {
     UpdateCommand: (input) => {
       const t = table(input.TableName);
       if (!conditionHolds(t.get(input.Key.PK), input)) throw conditionalFailure();
-      applyUpdate(t, input);
+      const item = applyUpdate(t, input);
+      if (input.ReturnValues === "ALL_NEW" || input.ReturnValues === "UPDATED_NEW") return { Attributes: clone(item) };
+      if (input.ReturnValues) throw new Error(`fakeDynamo: unsupported ReturnValues ${input.ReturnValues}`);
       return {};
     },
 
@@ -68,11 +99,12 @@ export function createFakeDynamo() {
       return { Responses, UnprocessedKeys: {} };
     },
 
-    QueryCommand: ({ TableName, KeyConditionExpression, ExpressionAttributeValues }) => {
-      const m = /^(\w+) = (:\w+)$/.exec(KeyConditionExpression);
+    QueryCommand: ({ TableName, KeyConditionExpression, ExpressionAttributeNames = {}, ExpressionAttributeValues }) => {
+      const m = /^(#?\w+) = (:\w+)$/.exec(KeyConditionExpression);
       if (!m) throw new Error(`fakeDynamo: unsupported key condition "${KeyConditionExpression}"`);
+      const attr = m[1].startsWith("#") ? ExpressionAttributeNames[m[1]] : m[1];
       const value = ExpressionAttributeValues[m[2]];
-      return { Items: [...table(TableName).values()].filter((i) => i[m[1]] === value).map(clone) };
+      return { Items: [...table(TableName).values()].filter((i) => i[attr] === value).map(clone) };
     },
 
     ScanCommand: ({ TableName }) => ({ Items: [...table(TableName).values()].map(clone) }),

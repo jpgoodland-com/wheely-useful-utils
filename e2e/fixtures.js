@@ -26,6 +26,33 @@ async function signIn(page, email, headers = {}) {
   expect(new URL(done.headers()["location"]).pathname, "callback should land on the dashboard").toBe("/dashboard");
 }
 
+/** RFC 6238 code for a base32 secret, `offset` steps from now (the server accepts ±1). */
+function totpCode(secret, offset = 0) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const ch of secret.replace(/=+$/, "")) bits += alphabet.indexOf(ch).toString(2).padStart(5, "0");
+  const key = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000) + offset));
+  const hmac = crypto.createHmac("sha1", key).update(counter).digest();
+  const o = hmac[hmac.length - 1] & 0xf;
+  return String((hmac.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, "0");
+}
+
+/**
+ * First sign-in step for a user who has MFA: runs the mock OAuth flow and
+ * expects to be sent to /login/mfa instead of the dashboard.
+ */
+async function startMfaSignIn(page, email, headers = {}) {
+  const start = await page.request.get("/api/auth/oauth/google", { maxRedirects: 0, headers });
+  const sandbox = new URL(start.headers()["location"]);
+  const callback = new URL(sandbox.searchParams.get("redirect_uri"));
+  callback.searchParams.set("code", `mock-code-google-${Buffer.from(email).toString("base64")}`);
+  callback.searchParams.set("state", sandbox.searchParams.get("state"));
+  const done = await page.request.get(callback.toString(), { maxRedirects: 0, headers });
+  expect(new URL(done.headers()["location"]).pathname, "an MFA user goes to the second step").toBe("/login/mfa");
+}
+
 /**
  * Waits until React has attached its handlers to a server-rendered element.
  * Before hydration, clicks and typing on SSR'd pages (sign in, sandbox) are
@@ -78,4 +105,4 @@ const test = base.extend({
   },
 });
 
-module.exports = { test, expect, signIn, openNav, uniqueEmail, waitForHydration };
+module.exports = { test, expect, signIn, startMfaSignIn, totpCode, openNav, uniqueEmail, waitForHydration };
