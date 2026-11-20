@@ -1,4 +1,3 @@
-process.env.JWT_SECRET = 'test-secret-for-jest-32-chars-long!!'
 process.env.OAUTH_GOOGLE_CLIENT_ID = 'google-test-cid'
 process.env.OAUTH_GOOGLE_CLIENT_SECRET = 'google-test-cs'
 process.env.OAUTH_MICROSOFT_CLIENT_ID = 'ms-test-cid'
@@ -48,6 +47,24 @@ describe('GET /api/auth/oauth/[provider]', () => {
 
     const setCookie = res.headers.get('set-cookie')
     expect(setCookie).toMatch(/oauth_state/)
+  })
+
+  it('binds nonce and PKCE verifier to the browser in httpOnly callback-scoped cookies', async () => {
+    const { pkceChallenge } = require('@/lib/oauth')
+    const req = new Request('http://localhost/api/auth/oauth/microsoft', { headers: { host: 'localhost:3000' } })
+    const res = await GET(req, { params: Promise.resolve({ provider: 'microsoft' }) })
+
+    const cookies = res.headers.getSetCookie()
+    const value = (name) => cookies.find((c) => c.startsWith(`${name}=`))?.split(';')[0].split('=')[1]
+    for (const name of ['oauth_state', 'oauth_nonce', 'oauth_verifier']) {
+      const c = cookies.find((x) => x.startsWith(`${name}=`))
+      expect(c).toMatch(/HttpOnly/i)
+      expect(c).toMatch(/Path=\/api\/auth\/callback/)
+    }
+    const url = new URL(res.headers.get('location'))
+    expect(url.searchParams.get('state')).toBe(value('oauth_state'))
+    expect(url.searchParams.get('nonce')).toBe(value('oauth_nonce'))
+    expect(url.searchParams.get('code_challenge')).toBe(pkceChallenge(value('oauth_verifier')))
   })
 
   it('includes state param in redirect URL', async () => {

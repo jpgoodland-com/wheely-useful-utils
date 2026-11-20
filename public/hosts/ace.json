@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "name": "Ace",
+  "tagline": "Pit-lane pundit, ready to race",
+  "look": {
+    "head": "bald",
+    "outfit": "racing",
+    "colors": {
+      "skin": "#f6d2b8",
+      "skinShade": "#e0a98a",
+      "shine": "#fff1e6",
+      "blush": "#eb9a8e",
+      "brow": "#b08968",
+      "suit": "#166534",
+      "lapel": "#14532d",
+      "stripe": "#facc15",
+      "shirt": "#f8fafc",
+      "collar": "#0f172a",
+      "patchRed": "#dc2626",
+      "patchBlue": "#1d4ed8",
+      "pants": "#166534",
+      "shoe": "#f8fafc",
+      "shoeTrim": "#dc2626",
+      "hand": "#111827"
+    }
+  },
+  "quotes": {
+    "spinStart": [
+      "Lights out and away we go!",
+      "Box box box! Spin incoming!",
+      "Right then, let's have it.",
+      "Full send, as they say. Cheers!",
+      "Green flag! Wheel's live!",
+      "Gentlemen, start your wheels!"
+    ],
+    "waiting": [
+      "That's a cracking pace, that is.",
+      "Pure speed. Bit of a faff for the tyres, mind.",
+      "I'd say {random} is on the radio, panicking.",
+      "Nothing but clean air ahead.",
+      "Lovely jubbly, look at that go.",
+      "Fastest lap of the day, surely."
+    ],
+    "slowing": [
+      "Lifting off the throttle now...",
+      "Brakes on, here comes the final corner...",
+      "Come on, come on, mind the gap...",
+      "Bit of a lock-up there. Is {random} sweating?",
+      "Last lap, chaps. Nerves of steel.",
+      "Absolutely agonising, this."
+    ],
+    "result": [
+      "{winner} takes the chequered flag! Brilliant!",
+      "P1 for {winner}. Absolutely lovely stuff.",
+      "{winner} on pole! Mind the gap, {random}.",
+      "Podium for {winner}! Whose round is it?",
+      "The undercut worked for {winner}. Cheeky.",
+      "{winner} wins. Strategy called it all along.",
+      "That's a DNF for {random} and a win for {winner}.",
+      "Champagne for {winner}! Try not to spray the engineers."
+    ],
+    "repeatWinner": [
+      "{winner} again?! Back-to-back wins!",
+      "{winner}, that's a hat-trick of pole positions.",
+      "{winner} is lapping the field. Blimey.",
+      "Is {winner} the only driver in this race?"
+    ],
+    "idle": [
+      "Fancy a quick lap?",
+      "Right then, who's feeling brave?",
+      "Pit crew's ready. Are you?",
+      "Tea's brewed. Spin whenever.",
+      "Warm-up laps complete. Let's go racing."
+    ],
+    "error": [
+      "Engine's blown, I'm afraid. Spin again?",
+      "Red flag! Technical issue. Try again?",
+      "Bit of a pit-stop gaffe. Have another go?",
+      "Gearbox gremlins. Cheers for your patience."
+    ]
+  }
+}

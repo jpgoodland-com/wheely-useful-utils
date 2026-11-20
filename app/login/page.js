@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/AuthContext";
+import { safeNextPath } from "@/lib/url";
 import Link from "next/link";
 import PasswordInput from "@/components/PasswordInput";
 import SocialLoginButtons from "@/components/SocialLoginButtons";
@@ -12,14 +13,17 @@ const OAUTH_ERROR_MESSAGES = {
   invalid_state: "Login session expired or invalid. Please try again.",
   unsupported_provider: "The selected login provider is not supported.",
   no_email: "Unable to retrieve your email from the social login provider.",
+  email_unverified: "Your provider hasn't verified that email address. Verify it with the provider, or sign up with email and password.",
+  account_conflict: "That email is already linked to another account. Please contact support.",
   missing_params: "Incomplete response from the social login provider. Please try again.",
   access_denied: "Sign in was cancelled or access was denied by the provider.",
+  session_expired: "Your session expired. Please sign in again to continue.",
 };
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { loginStateLocally } = useAuth();
+  const { refreshUser } = useAuth();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -34,6 +38,7 @@ function LoginForm() {
   const errorParam = searchParams.get("error");
   const urlError = errorParam ? (OAUTH_ERROR_MESSAGES[errorParam] || errorParam) : "";
   const displayError = error || urlError;
+  const nextPath = safeNextPath(searchParams.get("next"));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -61,15 +66,12 @@ function LoginForm() {
             setResendEmail(identifier);
           }
         }
+      } else if (data.mfaRequired) {
+        // Password accepted; the second factor finishes the sign-in.
+        router.push(`/login/mfa?next=${encodeURIComponent(nextPath)}`);
       } else {
-        loginStateLocally({
-          userId: data.userId,
-          username: data.username,
-          firstName: data.firstName || null,
-          lastName: data.lastName || null,
-          isAdmin: data.isAdmin,
-        });
-        router.push("/dashboard");
+        await refreshUser();
+        router.push(nextPath);
       }
     } catch (err) {
       setError("An unexpected error occurred.");

@@ -1,14 +1,10 @@
-process.env.JWT_SECRET = 'test-secret-for-jest-32-chars-long!!'
 process.env.OAUTH_GOOGLE_CLIENT_ID = 'google-test-cid'
 process.env.OAUTH_GOOGLE_CLIENT_SECRET = 'google-test-cs'
 
-import { GET } from '@/app/api/auth/callback/[provider]/route'
-
-// Mock DynamoDB
-jest.mock('@/lib/dynamodb', () => ({
-  docClient: { send: jest.fn() },
-  TableNames: { Users: 'WheelApp_Users' },
-}))
+jest.mock('@/lib/dynamodb', () => {
+  const { createFakeDynamo } = require('@/__tests__/helpers/fakeDynamo')
+  return { docClient: createFakeDynamo(), TableNames: { Users: 'WheelApp_Users' } }
+})
 
 // Mock the OAuth helpers so we don't make real HTTP requests
 jest.mock('@/lib/oauth', () => ({
@@ -17,18 +13,18 @@ jest.mock('@/lib/oauth', () => ({
   fetchUserProfile: jest.fn(),
 }))
 
-// Mock next/headers cookies()
-const mockCookies = {
-  get: jest.fn(),
-}
+// Mock next/headers cookies(): one value per cookie name
+let cookieJar = {}
 jest.mock('next/headers', () => ({
-  cookies: jest.fn(() => Promise.resolve(mockCookies)),
+  cookies: jest.fn(() => Promise.resolve({ get: (name) => (name in cookieJar ? { value: cookieJar[name] } : undefined) })),
 }))
 
+const { GET } = require('@/app/api/auth/callback/[provider]/route')
 const { docClient } = require('@/lib/dynamodb')
 const { exchangeCode, fetchUserProfile } = require('@/lib/oauth')
+const { seedUser, getUser, getPointer, USERS_TABLE } = require('@/__tests__/helpers/users')
 
-function makeCallbackRequest(provider, { code = 'test-code', state = 'valid-state', error: errorParam } = {}) {
+function makeCallbackRequest(provider, { code = 'test-code', state = 'valid-state', error: errorParam, headers } = {}) {
   const params = new URLSearchParams()
   if (code) params.set('code', code)
   if (state) params.set('state', state)
@@ -36,219 +32,170 @@ function makeCallbackRequest(provider, { code = 'test-code', state = 'valid-stat
 
   return new Request(`http://localhost/api/auth/callback/${provider}?${params}`, {
     method: 'GET',
-    headers: { host: 'localhost:3000' },
+    headers: headers || { host: 'localhost:3000' },
   })
 }
 
+const call = (provider = 'google', opts) => GET(makeCallbackRequest(provider, opts), { params: Promise.resolve({ provider }) })
+const location = (res) => res.headers.get('location')
+const primaries = () => docClient.items(USERS_TABLE).filter((i) => i.PK.startsWith('USER#') && !i.PK.startsWith('USER#USERNAME#'))
+
 beforeEach(() => {
   jest.clearAllMocks()
-  // Default: state cookie matches
-  mockCookies.get.mockReturnValue({ value: 'valid-state' })
-  // Default: mock OAuth helpers
-  exchangeCode.mockResolvedValue('mock-access-token')
-  fetchUserProfile.mockResolvedValue({ email: 'test@example.com', name: 'Test User' })
-  // Default: no existing user
-  docClient.send.mockResolvedValue({ Items: [] })
+  docClient.reset()
+  delete process.env.ADMIN_EMAILS
+  cookieJar = { oauth_state: 'valid-state', oauth_nonce: 'n-1', oauth_verifier: 'v-1' }
+  exchangeCode.mockResolvedValue({ access_token: 'at', id_token: 'it' })
+  fetchUserProfile.mockResolvedValue({ email: 'test@example.com', name: 'Test User', emailVerified: true, subject: 's1' })
 })
 
 describe('GET /api/auth/callback/[provider]', () => {
   it('redirects to /login with error for unsupported provider', async () => {
-    const req = makeCallbackRequest('discord')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'discord' }) })
-
+    const res = await call('discord')
     expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/login?error=unsupported_provider')
+    expect(location(res)).toContain('/login?error=unsupported_provider')
   })
 
   it('redirects to /login when provider returns an error', async () => {
-    const req = makeCallbackRequest('google', { error: 'access_denied' })
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/login?error=access_denied')
+    expect(location(await call('google', { error: 'access_denied' }))).toContain('/login?error=access_denied')
   })
 
   it('redirects to /login when code is missing', async () => {
-    const req = makeCallbackRequest('google', { code: null })
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/login?error=missing_params')
+    expect(location(await call('google', { code: null }))).toContain('/login?error=missing_params')
   })
 
-  it('rejects mismatched CSRF state', async () => {
-    mockCookies.get.mockReturnValue({ value: 'different-state' })
-
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/login?error=invalid_state')
+  it('rejects mismatched or missing CSRF state', async () => {
+    cookieJar.oauth_state = 'different-state'
+    expect(location(await call())).toContain('/login?error=invalid_state')
+    delete cookieJar.oauth_state
+    expect(location(await call())).toContain('/login?error=invalid_state')
+    expect(exchangeCode).not.toHaveBeenCalled()
   })
 
-  it('rejects when oauth_state cookie is missing', async () => {
-    mockCookies.get.mockReturnValue(undefined)
-
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/login?error=invalid_state')
+  it('passes the PKCE verifier and nonce from the flow cookies', async () => {
+    await call()
+    expect(exchangeCode).toHaveBeenCalledWith('google', 'test-code', 'http://localhost:3000/api/auth/callback/google', 'v-1')
+    expect(fetchUserProfile).toHaveBeenCalledWith('google', { access_token: 'at', id_token: 'it' }, { nonce: 'n-1' })
   })
 
-  it('creates a new user when email does not exist', async () => {
-    docClient.send.mockResolvedValue({ Items: [] })
-
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/dashboard')
-
-    // Should have called send 4 times: 1 email query + 1 username check + 2 puts (primary + username pointer)
-    expect(docClient.send).toHaveBeenCalledTimes(4)
-
-    // Verify the primary put (index 2: after email query and username check)
-    const putCall = docClient.send.mock.calls[2][0]
-    const item = putCall.input.Item
-    expect(item.email).toBe('test@example.com')
-    expect(item.isVerified).toBe(true)
-    expect(item.authProvider).toBe('google')
-    expect(item.oauthProviders).toEqual(['google'])
-    expect(item.password).toBeUndefined()
+  it('creates a new verified user when the email does not exist', async () => {
+    const res = await call()
+    expect(location(res)).toContain('/dashboard')
+    const [user] = primaries()
+    expect(user).toMatchObject({ email: 'test@example.com', isVerified: true, authProvider: 'google', oauthProviders: ['google'] })
+    expect(user.password).toBeUndefined()
+    expect(getPointer(docClient, user.username)).toMatchObject({ userId: user.userId })
   })
 
-  it('links provider to existing user', async () => {
-    const existingUser = {
-      PK: 'USER#existing-id',
-      userId: 'existing-id',
-      email: 'test@example.com',
-      username: 'testuser',
-      isAdmin: false,
-      isVerified: true,
+  it('refuses an email the provider has not verified, creating nothing (C2)', async () => {
+    fetchUserProfile.mockResolvedValue({ email: 'victim@corp.com', name: 'X', emailVerified: false })
+    const res = await call()
+    expect(location(res)).toContain('/login?error=email_unverified')
+    expect(primaries()).toHaveLength(0)
+    expect(res.headers.get('set-cookie')).not.toMatch(/(^|, )session=[^;]/)
+  })
+
+  it('refuses to sign in to an existing account with an unverified provider email (C2)', async () => {
+    seedUser(docClient, { userId: 'victim', username: 'victim', email: 'victim@corp.com', password: 'h' })
+    fetchUserProfile.mockResolvedValue({ email: 'victim@corp.com', name: 'X', emailVerified: false })
+    const res = await call('microsoft')
+    expect(location(res)).toContain('/login?error=email_unverified')
+    expect(getUser(docClient, 'victim').oauthProviders).toBeUndefined()
+  })
+
+  it('links the provider to an existing verified user, keeping their password', async () => {
+    seedUser(docClient, { userId: 'existing-id', username: 'testuser', email: 'test@example.com', password: 'h' })
+    const res = await call()
+    expect(location(res)).toContain('/dashboard')
+    for (const item of [getUser(docClient, 'existing-id'), getPointer(docClient, 'testuser')]) {
+      expect(item.oauthProviders).toEqual(['google'])
+      expect(item.password).toBe('h')
     }
-    docClient.send.mockResolvedValueOnce({ Items: [existingUser] })
-    // Update calls resolve
-    docClient.send.mockResolvedValue({})
-
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/dashboard')
-
-    // Should have called send for: 1 query + 2 updates (primary + username pointer)
-    expect(docClient.send).toHaveBeenCalledTimes(3)
   })
 
   it('does not duplicate provider when already linked', async () => {
-    const existingUser = {
-      PK: 'USER#existing-id',
-      userId: 'existing-id',
-      email: 'test@example.com',
-      username: 'testuser',
-      isAdmin: false,
-      isVerified: true,
-      oauthProviders: ['google'],
-    }
-    docClient.send.mockResolvedValueOnce({ Items: [existingUser] })
-
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/dashboard')
-
-    // Only 1 call: the initial query. No updates needed.
-    expect(docClient.send).toHaveBeenCalledTimes(1)
+    seedUser(docClient, { userId: 'existing-id', username: 'testuser', email: 'test@example.com', oauthProviders: ['google'] })
+    await call()
+    expect(getUser(docClient, 'existing-id').oauthProviders).toEqual(['google'])
+    expect(docClient.calls.filter((c) => c.name === 'UpdateCommand')).toHaveLength(0)
   })
 
-  it('sets auth_token cookie on success with SameSite=Lax', async () => {
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
+  it('wipes the password of an unverified account before linking it (C5 pre-account hijack)', async () => {
+    seedUser(docClient, {
+      userId: 'squat', username: 'squatter', email: 'test@example.com', isVerified: false,
+      password: 'attacker-hash', verificationTokenHash: 'h', verificationTokenExpiry: 'x', expiresAt: 123,
+    })
+    const res = await call()
+    expect(location(res)).toContain('/dashboard')
+    for (const item of [getUser(docClient, 'squat'), getPointer(docClient, 'squatter')]) {
+      expect(item.password).toBeUndefined()
+      expect(item.isVerified).toBe(true)
+      expect(item.verificationTokenHash).toBeUndefined()
+      expect(item.expiresAt).toBeUndefined()
+    }
+  })
 
-    const setCookie = res.headers.get('set-cookie')
-    expect(setCookie).toMatch(/auth_token/)
+  it('never signs in to an account whose username equals the email (C1 squat)', async () => {
+    docClient.put(USERS_TABLE, {
+      PK: 'USER#USERNAME#test@example.com', userId: 'evil', username: 'test@example.com',
+      email: 'evil@example.com', EmailOrUsername: 'test@example.com', isVerified: true,
+    })
+    const res = await call()
+    expect(location(res)).toContain('/login?error=account_conflict')
+    expect(res.headers.get('set-cookie')).not.toMatch(/(^|, )session=[^;]/)
+  })
+
+  it('sets the session cookie on success with SameSite=Lax and clears the flow cookies', async () => {
+    const setCookie = (await call()).headers.get('set-cookie')
+    expect(setCookie).toMatch(/(^|, )session=[^;]+/)
     expect(setCookie.toLowerCase()).toContain('samesite=lax')
+    for (const name of ['oauth_state', 'oauth_nonce', 'oauth_verifier']) expect(setCookie).toMatch(new RegExp(`${name}=;`))
   })
 
   it('redirects to HTTPS dashboard behind reverse proxy', async () => {
-    const req = new Request('http://localhost:3000/api/auth/callback/google?code=test-code&state=valid-state', {
-      method: 'GET',
-      headers: {
-        host: 'wheel-app.example.com',
-        'x-forwarded-proto': 'https',
-      },
-    })
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toBe('https://wheel-app.example.com/dashboard')
+    const res = await call('google', { headers: { host: 'wheel-app.example.com', 'x-forwarded-proto': 'https' } })
+    expect(location(res)).toBe('https://wheel-app.example.com/dashboard')
   })
 
-  it('clears oauth_state cookie on success', async () => {
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    const setCookie = res.headers.get('set-cookie')
-    expect(setCookie).toMatch(/oauth_state/)
-  })
-
-  it('redirects to /login on exchangeCode failure', async () => {
+  it('redirects to /login on exchangeCode failure without logging the error object', async () => {
     exchangeCode.mockRejectedValue(new Error('token exchange failed'))
-
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/login?error=oauth_failed')
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    expect(location(await call())).toContain('/login?error=oauth_failed')
+    expect(spy.mock.calls[0][1]).toBe('token exchange failed')
+    spy.mockRestore()
   })
 
   it('redirects to /login when profile has no email', async () => {
-    fetchUserProfile.mockResolvedValue({ email: '', name: 'No Email' })
-
-    const req = makeCallbackRequest('google')
-    const res = await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    expect(res.status).toBe(307)
-    expect(res.headers.get('location')).toContain('/login?error=no_email')
+    fetchUserProfile.mockResolvedValue({ email: '', name: 'No Email', emailVerified: true })
+    expect(location(await call())).toContain('/login?error=no_email')
   })
 
-  it('auto-generates username from email prefix for new users', async () => {
-    fetchUserProfile.mockResolvedValue({ email: 'alice.smith@gmail.com', name: 'Alice' })
-    docClient.send.mockResolvedValue({ Items: [] })
-
-    const req = makeCallbackRequest('google')
-    await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    // The primary Put is at index 2 (email query + username check + primary put)
-    const putCall = docClient.send.mock.calls[2][0]
-    const item = putCall.input.Item
-    // Username should be derived from 'alice.smith' (dots preserved as they pass the regex)
-    expect(item.username).toMatch(/^alice/)
+  it('generates a valid username from the email prefix', async () => {
+    fetchUserProfile.mockResolvedValue({ email: 'Alice.Smith+tag@gmail.com', name: 'Alice', emailVerified: true })
+    await call()
+    expect(primaries()[0].username).toBe('alice.smithtag')
   })
 
-  it('grants admin to emails configured in ADMIN_EMAILS for new OAuth users', async () => {
+  it('adds a suffix when the derived username is taken, and pads short prefixes', async () => {
+    seedUser(docClient, { userId: 'u0', username: 'alice', email: 'other@example.com' })
+    fetchUserProfile.mockResolvedValue({ email: 'alice@gmail.com', name: 'Alice', emailVerified: true })
+    await call()
+    const created = primaries().find((u) => u.email === 'alice@gmail.com')
+    expect(created.username).toMatch(/^alice_[0-9a-f]{6}$/)
+
+    fetchUserProfile.mockResolvedValue({ email: 'x@gmail.com', name: 'X', emailVerified: true })
+    await call()
+    expect(primaries().find((u) => u.email === 'x@gmail.com').username).toBe('userx')
+  })
+
+  it('grants admin only from the ADMIN_EMAILS allowlist (C3)', async () => {
+    fetchUserProfile.mockResolvedValue({ email: 'admin@example.com', name: 'Admin', emailVerified: true })
+    await call()
+    expect(primaries()[0].isAdmin).toBe(false)
+
+    docClient.reset()
     process.env.ADMIN_EMAILS = 'admin@example.com'
-    fetchUserProfile.mockResolvedValue({ email: 'admin@example.com', name: 'Admin' })
-    docClient.send.mockResolvedValue({ Items: [] })
-
-    const req = makeCallbackRequest('google')
-    await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    const putCall = docClient.send.mock.calls[2][0]
-    expect(putCall.input.Item.isAdmin).toBe(true)
-  })
-
-  it('does not grant admin to unlisted emails for new OAuth users', async () => {
-    delete process.env.ADMIN_EMAILS
-    fetchUserProfile.mockResolvedValue({ email: 'admin@example.com', name: 'Admin' })
-    docClient.send.mockResolvedValue({ Items: [] })
-
-    const req = makeCallbackRequest('google')
-    await GET(req, { params: Promise.resolve({ provider: 'google' }) })
-
-    const putCall = docClient.send.mock.calls[2][0]
-    expect(putCall.input.Item.isAdmin).toBe(false)
+    await call()
+    expect(primaries()[0].isAdmin).toBe(true)
   })
 })

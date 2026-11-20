@@ -23,7 +23,7 @@ resource "aws_iam_role_policy_attachment" "task_exec_managed" {
 }
 
 resource "aws_iam_role_policy" "task_exec_secrets" {
-  name = "read-jwt-secret"
+  name = "read-app-secrets"
   role = aws_iam_role.task_exec.id
 
   policy = jsonencode({
@@ -32,7 +32,6 @@ resource "aws_iam_role_policy" "task_exec_secrets" {
       Effect = "Allow"
       Action = "secretsmanager:GetSecretValue"
       Resource = [
-        aws_secretsmanager_secret.jwt_secret.arn,
         aws_secretsmanager_secret.oauth_google.arn,
         aws_secretsmanager_secret.oauth_microsoft.arn,
         aws_secretsmanager_secret.oauth_github.arn,
@@ -60,6 +59,7 @@ resource "aws_iam_role_policy" "task_dynamodb" {
       Effect = "Allow"
       Action = [
         "dynamodb:GetItem",
+        "dynamodb:BatchGetItem",
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
@@ -71,7 +71,66 @@ resource "aws_iam_role_policy" "task_dynamodb" {
         "${aws_dynamodb_table.users.arn}/index/*",
         aws_dynamodb_table.wheels.arn,
         "${aws_dynamodb_table.wheels.arn}/index/*",
+        aws_dynamodb_table.coinflip.arn,
+        aws_dynamodb_table.capacity_plans.arn,
+        "${aws_dynamodb_table.capacity_plans.arn}/index/*",
       ]
+    }]
+  })
+}
+
+# The audit table is append-only for the app: it can add and read records,
+# never change or delete them.
+resource "aws_iam_role_policy" "task_audit" {
+  name = "dynamodb-audit-append-only"
+  role = aws_iam_role.task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["dynamodb:PutItem", "dynamodb:Query"]
+      Resource = [
+        aws_dynamodb_table.audit.arn,
+        "${aws_dynamodb_table.audit.arn}/index/*",
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "task_kms" {
+  name = "kms-app-secrets"
+  role = aws_iam_role.task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Encrypt", "kms:Decrypt"]
+      Resource = aws_kms_key.app.arn
+      # Calls without an encryption context are refused, so a ciphertext
+      # can't be decrypted outside the record it was made for.
+      Condition = {
+        Null = { "kms:EncryptionContextKeys" = "false" }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "task_kms_dynamodb" {
+  name = "kms-dynamodb-tables"
+  role = aws_iam_role.task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
+      Resource = aws_kms_key.dynamodb.arn
+      # Only through DynamoDB, never as a general-purpose key.
+      Condition = {
+        StringEquals = { "kms:ViaService" = "dynamodb.${var.aws_region}.amazonaws.com" }
+      }
     }]
   })
 }

@@ -1,0 +1,860 @@
+/* ── Grid ─────────────────────────────────────────────────────────────────── */
+
+/*
+ * The grid scrolls inside a height-capped box so its horizontal scrollbar is
+ * always on screen, with the header and team-total rows pinned (see sticky
+ * rules below). `overflow-x: scroll` reserves the scrollbar even when the
+ * Sprints fit.
+ */
+.scroller {
+  overflow-x: scroll;
+  overflow-y: auto;
+  max-width: 100%;
+  max-height: max(320px, calc(100vh - 180px));
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+/*
+ * Keep the scrollbar visible instead of macOS-style overlay scrollbars that
+ * hide until you scroll. In Chromium/Safari, custom ::-webkit-scrollbar styles
+ * do this, but only when the standard scrollbar-width/color properties (set
+ * globally in globals.css) are reset to auto. Firefox ignores ::-webkit-* and
+ * keeps the standard properties below.
+ */
+@supports selector(::-webkit-scrollbar) {
+  .scroller {
+    scrollbar-width: auto;
+    scrollbar-color: auto;
+  }
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .scroller {
+    scrollbar-width: auto;
+    scrollbar-color: rgba(59, 130, 246, 0.7) rgba(15, 23, 42, 0.9);
+  }
+}
+
+.scroller::-webkit-scrollbar {
+  height: 12px;
+  width: 12px;
+}
+
+.scroller::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.9);
+  border-radius: 0 0 16px 16px;
+}
+
+.scroller::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.6);
+  border-radius: 8px;
+  border: 2px solid rgba(15, 23, 42, 0.9);
+}
+
+.scroller::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.85);
+}
+
+.scroller::-webkit-scrollbar-corner {
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.table {
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: max-content;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  padding: 0.6rem 0.85rem;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  text-align: right;
+  vertical-align: middle;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgb(17, 25, 44);
+  color: var(--text-main);
+  font-weight: 600;
+  font-size: 0.85rem;
+  vertical-align: bottom;
+}
+
+.table tfoot td,
+.table tfoot th {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: rgb(17, 25, 44);
+  font-weight: 700;
+  border-bottom: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* Sticky cells need opaque backgrounds or scrolled content shows through. */
+.stickyLeft {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: rgb(15, 23, 42);
+  text-align: left !important;
+  min-width: 180px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 8px 0 8px -8px rgba(0, 0, 0, 0.6);
+}
+
+.stickyRight {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: rgb(15, 23, 42);
+  box-shadow: -8px 0 8px -8px rgba(0, 0, 0, 0.6);
+  min-width: 96px;
+}
+
+.table thead .stickyLeft,
+.table thead .stickyRight,
+.table tfoot .stickyLeft,
+.table tfoot .stickyRight {
+  z-index: 3;
+  background: rgb(17, 25, 44);
+}
+
+.sprintHead {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+  min-width: 110px;
+}
+
+.sprintName {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.sprintDates {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.currentSprint {
+  box-shadow: inset 0 3px 0 var(--accent-blue);
+}
+
+.iconBtn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.2rem;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.iconBtn:hover,
+.iconBtn:focus-visible {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.renameInput {
+  width: 140px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  border: 1px solid var(--accent-blue);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text-main);
+  font-family: inherit;
+}
+
+.cellBtn {
+  width: 100%;
+  min-width: 88px;
+  text-align: right;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.cellBtn:hover,
+.cellBtn:focus-visible {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.45);
+  outline: none;
+}
+
+.adjusted {
+  color: #fbbf24;
+}
+
+.adjusted::after {
+  content: "•";
+  margin-left: 0.3rem;
+}
+
+.memberName {
+  display: flex;
+  flex-direction: column;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+
+.native {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.disclosure {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0;
+  text-align: left;
+}
+
+.subRow th,
+.subRow td {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.subRow .stickyLeft {
+  padding-left: 2rem;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Toolbar & badges ─────────────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #93c5fd;
+}
+
+.badgeOwner {
+  background: rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
+}
+
+.badgeEdit {
+  background: rgba(59, 130, 246, 0.15);
+  color: #93c5fd;
+}
+
+.badgeView {
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #bfdbfe;
+}
+
+.error {
+  background: rgba(236, 72, 153, 0.1);
+  border-color: rgba(236, 72, 153, 0.4);
+  color: #f9a8d4;
+}
+
+.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #fcd34d;
+}
+
+/* Extra footer rows (one per unit in "Source units") scroll normally; only the
+   last stays pinned, so pinned rows never stack on top of each other. */
+.table tfoot .footerUnpinned td,
+.table tfoot .footerUnpinned th {
+  bottom: auto;
+}
+
+/* ── Segmented control (combined view units) ──────────────────────────────── */
+
+.segmented {
+  display: inline-flex;
+  padding: 0.2rem;
+  gap: 0.2rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.segment {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.9rem;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.segment:hover,
+.segment:focus-visible {
+  color: var(--text-main);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
+}
+
+.segmentActive {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+.unitsBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+/* ── Range change feedback ────────────────────────────────────────────────── */
+
+.rangeSummary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.875rem;
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.rangeSummaryPulse {
+  animation: rangeSummaryFlash 1.6s ease-out;
+}
+
+@keyframes rangeSummaryFlash {
+  0%,
+  35% {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.22);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+  }
+  100% {
+    border-color: var(--glass-border);
+    background: rgba(255, 255, 255, 0.03);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+
+/* The grid's border glows and its scrollbar is highlighted while this class is on. */
+.rangePulse .scroller {
+  animation: rangePulse 1.6s ease-out;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .rangePulse .scroller {
+    scrollbar-color: var(--accent-blue) rgba(59, 130, 246, 0.15);
+  }
+}
+
+.rangePulse .scroller::-webkit-scrollbar-thumb {
+  background: var(--accent-blue);
+}
+
+.rangePulse .scroller::-webkit-scrollbar-track {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+@keyframes rangePulse {
+  0%,
+  35% {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3), 0 0 32px rgba(59, 130, 246, 0.25);
+  }
+  100% {
+    border-color: var(--glass-border);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+  }
+}
+
+/* ── Range selector ───────────────────────────────────────────────────────── */
+
+.range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.range label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.range input {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.presets {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.chip {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.chip:hover,
+.chip:focus-visible {
+  border-color: rgba(59, 130, 246, 0.6);
+}
+
+.chipActive {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: var(--accent-blue);
+}
+
+.btnSm {
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+}
+
+/* ── Date field ───────────────────────────────────────────────────────────── */
+
+.dateField {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.dateInput {
+  width: 100%;
+  padding-right: 2.75rem !important;
+  color-scheme: dark;
+  cursor: pointer;
+}
+
+/* Hide the browser's low-contrast icon; the button below replaces it. */
+.dateInput::-webkit-calendar-picker-indicator {
+  opacity: 0;
+  position: absolute;
+  right: 0;
+  width: 2.75rem;
+  height: 100%;
+  cursor: pointer;
+}
+
+.dateBtn {
+  position: absolute;
+  right: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.dateBtn:hover,
+.dateBtn:focus-visible {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dateBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ── Forms ────────────────────────────────────────────────────────────────── */
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1rem;
+}
+
+.full {
+  grid-column: 1 / -1;
+}
+
+.weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.fieldset {
+  border: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.radioRow {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.radioRow label,
+.checkRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+/* ── Tabs ─────────────────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--glass-border);
+  margin-bottom: 1.25rem;
+  overflow-x: auto;
+}
+
+.tab {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.6rem 1rem;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text-main);
+  border-bottom-color: var(--accent-blue);
+}
+
+/* ── Lists (people, plans, days) ──────────────────────────────────────────── */
+
+.list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.listItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+}
+
+.listItem select {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.person {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.person span:first-child {
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.dangerBtn {
+  color: #f9a8d4;
+  border-color: rgba(236, 72, 153, 0.4);
+}
+
+.addRow {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.addRow > :first-child {
+  flex: 1;
+  min-width: 220px;
+}
+
+.picker {
+  position: relative;
+}
+
+.results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  list-style: none;
+  background: rgb(17, 25, 44);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.5);
+}
+
+.result {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 0.6rem 0.85rem;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+}
+
+.result:hover,
+.result:focus-visible,
+.resultActive {
+  background: rgba(59, 130, 246, 0.15);
+  outline: none;
+}
+
+.dayRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dayRow select {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+  min-width: 110px;
+}
+
+.dayChanged {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.weekLabel {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 0.75rem 0 0.25rem;
+}
+
+.summaryBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.planCard {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+}
+
+.planCard a {
+  color: var(--text-main);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.planCard a:hover,
+.planCard a:focus-visible {
+  color: var(--accent-blue);
+}
+
+.planMeta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.section {
+  margin-bottom: 2rem;
+}
+
+.section h3 {
+  font-size: 1.05rem;
+  margin-bottom: 0.75rem;
+}
+
+.empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--text-muted);
+}
+
+.menu {
+  position: relative;
+}
+
+.menu summary {
+  list-style: none;
+}
+
+.menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.menuList {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 220px;
+  list-style: none;
+  background: rgb(17, 25, 44);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 0.35rem;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.5);
+}
+
+.menuList a {
+  display: block;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  color: var(--text-main);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.menuList a:hover,
+.menuList a:focus-visible {
+  background: rgba(59, 130, 246, 0.15);
+  outline: none;
+}
+
+@media (max-width: 640px) {
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+  .stickyLeft {
+    min-width: 130px;
+    max-width: 160px;
+  }
+}

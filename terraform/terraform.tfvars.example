@@ -9,10 +9,9 @@ image_tag  = "latest"
 task_cpu    = 256
 task_memory = 512
 
-desired_count = 1
-
-dynamodb_read_capacity  = 5
-dynamodb_write_capacity = 5
+# Two tasks, so a Spot interruption or deploy never leaves the ALB without a
+# healthy target.
+desired_count = 2
 
 # Custom domain configuration (optional)
 # domain         = "wheel-app.example.com"

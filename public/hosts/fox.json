@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "name": "Fox",
+  "tagline": "Ultra marathon fox",
+  "look": {
+    "head": "fox",
+    "outfit": "trail",
+    "colors": {
+      "skin": "#f08a24",
+      "skinShade": "#c2570c",
+      "furLight": "#fff4e6",
+      "furDark": "#3b2314",
+      "nose": "#111827",
+      "band": "#facc15",
+      "vest": "#0f766e",
+      "vestLight": "#2dd4bf",
+      "bib": "#f8fafc",
+      "bibInk": "#1e293b",
+      "flask": "#38bdf8",
+      "shorts": "#1e3a8a",
+      "pants": "#3b2314",
+      "shoe": "#a3e635",
+      "hand": "#3b2314",
+      "sleeve": "#f08a24"
+    }
+  },
+  "quotes": {
+    "spinStart": [
+      "Ninety-nine miles to go, one wheel to spin!",
+      "Trail legs engaged. Spinning!",
+      "Starting line, no headlamp needed!",
+      "Fox on the course!",
+      "Let's get after it. Slowly, for 100 miles."
+    ],
+    "waiting": [
+      "Aid station snacks are looking good.",
+      "Running on trail mix and spite.",
+      "Mile 40. Everything's fine. Everything's fine.",
+      "Hydration check, {random}!",
+      "Anyone else's quads feeling this?",
+      "Chafing is a state of mind."
+    ],
+    "slowing": [
+      "Pole pole. Slow and steady.",
+      "Mile 80 energy. Everything hurts.",
+      "Hitting the wall... gently...",
+      "One foot in front of the other...",
+      "Cutoff time is closing in on {random}!",
+      "The final climb. Don't look at the watch."
+    ],
+    "result": [
+      "{winner} crosses the finish line! Buckle time!",
+      "{winner} gets the finisher's buckle. Wear it with pride.",
+      "{winner} has reached the next aid station!",
+      "{winner} takes the course record. Probably.",
+      "Sunrise finish for {winner}! Well run.",
+      "{winner} went the distance. {random} took the shortcut.",
+      "DNF is not in my vocabulary. Congrats, {winner}!"
+    ],
+    "repeatWinner": [
+      "{winner} again?! Is {winner} sponsored by the trail?",
+      "{winner} is on the second lap of the course!",
+      "Back-to-back buckles for {winner}!",
+      "{winner} is a one-person pace group."
+    ],
+    "idle": [
+      "Did someone say a long run?",
+      "Pre-race jitters? Spin it off!",
+      "I stretched for this. A lot.",
+      "The trail is calling. So is the wheel.",
+      "Fueling up. Spin when you're ready."
+    ],
+    "error": [
+      "Wrong turn at the trailhead. Spin again?",
+      "Lost the trail markers. Try again?",
+      "Dropped a gel. Give it another go!",
+      "Course closed due to wildlife. Retry?"
+    ]
+  }
+}

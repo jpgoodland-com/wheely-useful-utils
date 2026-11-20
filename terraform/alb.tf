@@ -28,7 +28,22 @@ resource "aws_lb" "app" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
+  # Malformed headers are dropped instead of being passed to the app.
+  drop_invalid_header_fields = true
+
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.id
+    prefix  = "alb"
+    enabled = true
+  }
+
   tags = { Name = "${var.app_name}-alb" }
+
+  # Enabling access logs makes AWS write a test object to the bucket at
+  # once, so the bucket policy that lets ELB log delivery write there must
+  # exist first. Without this, both were applied in parallel and the
+  # first apply failed with "Access Denied for bucket".
+  depends_on = [aws_s3_bucket_policy.alb_logs]
 }
 
 resource "aws_lb_target_group" "app" {
@@ -38,8 +53,18 @@ resource "aws_lb_target_group" "app" {
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
 
+  # Drain well inside the 2-minute Fargate Spot interruption warning.
+  # The default 300s can't finish before the task is killed, and API requests
+  # are short.
+  deregistration_delay = 30
+
+  # /api/health returns 200 without auth or data calls.
+  # The matcher stays 200-399 for one release: CI applies Terraform before it
+  # deploys the new image, and the old image answers this path with an HTTPS
+  # redirect (301). Tighten it to "200" once /api/health is live, so a redirect
+  # can no longer pass for a healthy task.
   health_check {
-    path                = "/"
+    path                = "/api/health"
     interval            = 30
     healthy_threshold   = 2
     unhealthy_threshold = 3

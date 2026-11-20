@@ -1,18 +1,25 @@
 import { GET, POST } from '@/app/api/admin/users/route'
 import { DELETE, PATCH } from '@/app/api/admin/users/[userId]/route'
 
+jest.mock('@/lib/audit', () => ({ recordAudit: jest.fn(async () => ({})) }))
 jest.mock('@/lib/dynamodb', () => ({
   docClient: { send: jest.fn() },
   TableNames: { Users: 'WheelApp_Users', Wheels: 'WheelApp_Wheels' },
 }))
 
-jest.mock('@/lib/session', () => ({ getSession: jest.fn() }))
+jest.mock('@/lib/session', () => ({ ...jest.requireActual('@/lib/session'), getSession: jest.fn() }))
+jest.mock('@/lib/sessions/store', () => ({ ...jest.requireActual('@/lib/sessions/store'), revokeAllSessions: jest.fn().mockResolvedValue(0) }))
+
 jest.mock('bcrypt', () => ({ hash: jest.fn().mockResolvedValue('hashed') }))
+jest.mock('@/lib/capacity/store', () => ({
+  ...jest.requireActual('@/lib/capacity/store'),
+  deleteAllCapacityData: jest.fn().mockResolvedValue({ plansDeleted: 0, plansTransferred: 0 }),
+}))
 
 const { docClient } = require('@/lib/dynamodb')
 const { getSession } = require('@/lib/session')
 
-const adminSession = { userId: 'admin1', isAdmin: true }
+const adminSession = { userId: 'admin1', isAdmin: true, authAt: Date.now() }
 const regularSession = { userId: 'user1', isAdmin: false }
 
 const userItems = [
@@ -117,8 +124,8 @@ describe('POST /api/admin/users', () => {
 
   it('returns 409 when email already exists', async () => {
     getSession.mockResolvedValue(adminSession)
-    docClient.send.mockResolvedValueOnce({ Items: [{ userId: 'existing' }] })
-    const res = await POST(makePost({ email: 'taken@x.com', username: 'u', password: 'Str0ng!Passw0rd123' }))
+    docClient.send.mockResolvedValueOnce({ Items: [{ PK: 'USER#existing', userId: 'existing' }] })
+    const res = await POST(makePost({ email: 'taken@x.com', username: 'newuser', password: 'Str0ng!Passw0rd123' }))
     expect(res.status).toBe(409)
   })
 
@@ -126,9 +133,16 @@ describe('POST /api/admin/users', () => {
     getSession.mockResolvedValue(adminSession)
     docClient.send
       .mockResolvedValueOnce({ Items: [] })
-      .mockResolvedValueOnce({ Items: [{ userId: 'existing' }] })
+      .mockResolvedValueOnce({ Items: [{ PK: 'USER#USERNAME#taken', userId: 'existing' }] })
     const res = await POST(makePost({ email: 'new@x.com', username: 'taken', password: 'Str0ng!Passw0rd123' }))
     expect(res.status).toBe(409)
+  })
+
+  it('rejects a username containing @ (C1)', async () => {
+    getSession.mockResolvedValue(adminSession)
+    const res = await POST(makePost({ email: 'new@x.com', username: 'ceo@corp.com', password: 'Str0ng!Passw0rd123' }))
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toMatch(/username/i)
   })
 
   it('returns 403 for non-admin', async () => {
@@ -145,6 +159,13 @@ function makeParams(userId) {
 }
 
 describe('DELETE /api/admin/users/[userId]', () => {
+  it('requires a recent re-authentication (H4)', async () => {
+    getSession.mockResolvedValue({ ...adminSession, authAt: undefined })
+    const res = await DELETE(new Request('http://localhost'), makeParams('u1'))
+    expect(res.status).toBe(401)
+    expect(docClient.send).not.toHaveBeenCalled()
+  })
+
   it('happy path - deletes user and their username pointer', async () => {
     getSession.mockResolvedValue(adminSession)
     docClient.send.mockImplementation(async (cmd) => {
@@ -170,6 +191,20 @@ describe('DELETE /api/admin/users/[userId]', () => {
     const deletes = calls.filter(c => c.constructor.name === 'DeleteCommand').map(c => c.input.Key.PK)
     expect(deletes).toContain('USER#u1')
     expect(deletes).toContain('USER#USERNAME#alice')
+
+    const { deleteAllCapacityData } = require('@/lib/capacity/store')
+    expect(deleteAllCapacityData).toHaveBeenCalledWith('u1', {}, { force: true })
+  })
+
+  it('returns 409 and deletes nothing else when a capacity plan changes concurrently', async () => {
+    getSession.mockResolvedValue(adminSession)
+    docClient.send.mockResolvedValueOnce({ Item: { PK: 'USER#u1', userId: 'u1', username: 'alice' } })
+    const { deleteAllCapacityData, ConflictError } = require('@/lib/capacity/store')
+    deleteAllCapacityData.mockRejectedValueOnce(new ConflictError('Concurrent update'))
+
+    const res = await DELETE(new Request('http://localhost'), makeParams('u1'))
+    expect(res.status).toBe(409)
+    expect(docClient.send).toHaveBeenCalledTimes(1)
   })
 
   it('returns 400 when admin tries to delete themselves', async () => {
@@ -203,6 +238,14 @@ function makePatch(userId, body) {
 }
 
 describe('PATCH /api/admin/users/[userId]', () => {
+  it('requires a recent re-authentication to grant admin (H4)', async () => {
+    getSession.mockResolvedValue({ ...adminSession, authAt: Date.now() - 11 * 60 * 1000 })
+    const res = await PATCH(makePatch('u1', { isAdmin: true }), makeParams('u1'))
+    expect(res.status).toBe(401)
+    expect((await res.json()).reauthRequired).toBe(true)
+    expect(docClient.send).not.toHaveBeenCalled()
+  })
+
   it('happy path - grants admin role', async () => {
     getSession.mockResolvedValue(adminSession)
     docClient.send
@@ -259,6 +302,17 @@ describe('PATCH /api/admin/users/[userId]', () => {
 // ── PATCH /api/admin/users/[userId] — Password Reset ─────────────────────────
 
 describe('PATCH /api/admin/users/[userId] - password reset', () => {
+  it('signs the user out everywhere after an admin sets their password', async () => {
+    const { revokeAllSessions } = require('@/lib/sessions/store')
+    getSession.mockResolvedValue(adminSession)
+    docClient.send.mockResolvedValue({ Item: { PK: 'USER#u1', userId: 'u1', username: 'alice' } })
+    const res = await PATCH(makePatch('u1', { newPassword: 'Str0ng!Passw0rd123' }), makeParams('u1'))
+    expect(res.status).toBe(200)
+    expect(revokeAllSessions).toHaveBeenCalledWith('u1')
+    const { recordAudit } = require('@/lib/audit')
+    expect(recordAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'admin.password_set', actorType: 'admin', actorUserId: 'admin1', targetUserId: 'u1' }))
+  })
+
   it('happy path - resets password and updates both records', async () => {
     getSession.mockResolvedValue(adminSession)
     docClient.send
@@ -322,7 +376,7 @@ describe('PATCH /api/admin/users/[userId] - password reset', () => {
 
     await PATCH(makePatch('u1', { newPassword: 'Str0ng!Passw0rd123' }), makeParams('u1'))
 
-    expect(bcrypt.hash).toHaveBeenCalledWith('Str0ng!Passw0rd123', 10)
+    expect(bcrypt.hash).toHaveBeenCalledWith('Str0ng!Passw0rd123', 12)
     expect(capturedUpdateExpr).toContain('password = :pw')
     expect(capturedExprValues[':pw']).toBe('hashed') // from our bcrypt mock
   })

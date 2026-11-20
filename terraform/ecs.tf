@@ -3,15 +3,28 @@ resource "aws_ecs_cluster" "main" {
 
   setting {
     name  = "containerInsights"
-    value = "enabled"
+    value = "disabled"
   }
 
   tags = { Name = var.app_name }
 }
 
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  cluster_name = aws_ecs_cluster.main.name
+
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+
+  default_capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 100
+    base              = 0
+  }
+}
+
 resource "aws_cloudwatch_log_group" "app" {
-  name              = "/ecs/${var.app_name}"
-  retention_in_days = 30
+  name = "/ecs/${var.app_name}"
+  # One year: SOC 2 / ISO 27001 auditors expect a year of security logs.
+  retention_in_days = 365
 }
 
 resource "aws_ecs_task_definition" "app" {
@@ -43,14 +56,12 @@ resource "aws_ecs_task_definition" "app" {
       { name = "OAUTH_MICROSOFT_CLIENT_ID", value = var.oauth_microsoft_client_id },
       { name = "OAUTH_GITHUB_CLIENT_ID", value = var.oauth_github_client_id },
       { name = "ADMIN_EMAILS", value = var.admin_emails },
+      { name = "DONATION_URL", value = var.donation_url },
+      { name = "APP_KMS_KEY_ID", value = aws_kms_key.app.arn },
     ]
 
     # Secrets are injected from Secrets Manager — never appear in plaintext
     secrets = [
-      {
-        name      = "JWT_SECRET"
-        valueFrom = aws_secretsmanager_secret.jwt_secret.arn
-      },
       {
         name      = "OAUTH_GOOGLE_CLIENT_SECRET"
         valueFrom = aws_secretsmanager_secret.oauth_google.arn
@@ -81,11 +92,28 @@ resource "aws_ecs_service" "app" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
   desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+
+  # give a new task time to start Node before ALB health checks count.
+  health_check_grace_period_seconds = 60
+
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 100
+    base              = 0
+  }
 
   # Pick up new task definitions automatically on the next deployment
   force_new_deployment = true
 
+  # Roll back a deployment whose tasks never become healthy, instead of
+  # retrying forever (monitoring.tf emails when this happens).
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  # Both subnets are in different AZs, and ECS spreads Fargate tasks across
+  # them, so with desired_count = 2 one AZ or task loss leaves a healthy target.
   network_configuration {
     subnets          = aws_subnet.public[*].id
     security_groups  = [aws_security_group.app.id]

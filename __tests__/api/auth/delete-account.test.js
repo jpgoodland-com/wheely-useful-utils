@@ -1,5 +1,6 @@
 import { DELETE } from '@/app/api/auth/delete-account/route'
 
+jest.mock('@/lib/audit', () => ({ recordAudit: jest.fn(async () => ({})) }))
 jest.mock('@/lib/dynamodb', () => ({
   docClient: { send: jest.fn() },
   TableNames: { Users: 'WheelApp_Users', Wheels: 'WheelApp_Wheels' },
@@ -9,31 +10,49 @@ jest.mock('@/lib/email', () => ({
   sendEmail: jest.fn().mockResolvedValue(undefined),
 }))
 
-jest.mock('@/lib/session', () => ({ getSession: jest.fn() }))
+jest.mock('@/lib/session', () => ({ ...jest.requireActual('@/lib/session'), getSession: jest.fn() }))
+jest.mock('@/lib/sessions/store', () => ({ ...jest.requireActual('@/lib/sessions/store'), revokeAllSessions: jest.fn().mockResolvedValue(0) }))
+
+
+jest.mock('@/lib/capacity/store', () => ({
+  ...jest.requireActual('@/lib/capacity/store'),
+  deleteAllCapacityData: jest.fn(),
+}))
 
 const { docClient } = require('@/lib/dynamodb')
 const { getSession } = require('@/lib/session')
+const { deleteAllCapacityData, DecisionRequiredError } = require('@/lib/capacity/store')
 
-const session = { userId: 'u1', username: 'alice', email: 'alice@example.com' }
+const session = { userId: 'u1', username: 'alice', email: 'alice@example.com', authAt: Date.now() }
 
 const existingWheels = [
   { PK: 'WHEEL#w1', wheelId: 'w1', name: 'My Wheel', ownerId: 'u1' },
   { PK: 'WHEEL#w2', wheelId: 'w2', name: 'Other Wheel', ownerId: 'u2' },
 ]
 
-function makeRequest() {
+function makeRequest(body) {
   return new Request('http://localhost/api/auth/delete-account', {
     method: 'DELETE',
+    ...(body ? { body: JSON.stringify(body) } : {}),
   })
 }
 
 beforeEach(() => {
   jest.clearAllMocks()
+  deleteAllCapacityData.mockResolvedValue({ plansDeleted: 0, plansTransferred: 0 })
   jest.spyOn(console, 'info').mockImplementation(() => {}) // Silence expected log
   jest.spyOn(console, 'error').mockImplementation(() => {}) // Silence expected error logs
 })
 
 describe('DELETE /api/auth/delete-account', () => {
+  it('requires a recent re-authentication and deletes nothing without it (H4)', async () => {
+    getSession.mockResolvedValue({ ...session, authAt: Date.now() - 11 * 60 * 1000 })
+    const res = await DELETE(makeRequest())
+    expect(res.status).toBe(401)
+    expect((await res.json()).reauthRequired).toBe(true)
+    expect(docClient.send).not.toHaveBeenCalled()
+  })
+
   it('returns 401 when not authenticated', async () => {
     getSession.mockResolvedValue(null)
     const res = await DELETE(makeRequest())
@@ -68,7 +87,11 @@ describe('DELETE /api/auth/delete-account', () => {
 
     // Verify cookie cleared
     const cookie = res.headers.get('set-cookie')
-    expect(cookie).toMatch(/auth_token/)
+    expect(cookie).toMatch(/(^|, )session=;/)
+    const { revokeAllSessions } = require('@/lib/sessions/store')
+    expect(revokeAllSessions).toHaveBeenCalledWith('u1')
+    const { recordAudit } = require('@/lib/audit')
+    expect(recordAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'account.deleted', actorUserId: 'u1' }))
     expect(cookie).toMatch(/max-age=0/i)
 
     // Verify compliance logging
@@ -87,7 +110,7 @@ describe('DELETE /api/auth/delete-account', () => {
   })
 
   it('skips username deletion if username is absent in session', async () => {
-    getSession.mockResolvedValue({ userId: 'u2' })
+    getSession.mockResolvedValue({ userId: 'u2', authAt: Date.now() })
     
     docClient.send.mockImplementation(async (command) => {
       if (command.constructor.name === 'QueryCommand' || command.input?.IndexName === 'OwnerIdIndex') return { Items: [] }
@@ -135,5 +158,43 @@ describe('DELETE /api/auth/delete-account', () => {
     
     const res = await DELETE(makeRequest())
     expect(res.status).toBe(500)
+  })
+
+  describe('capacity plans', () => {
+    const PLAN = '4f9c2a7e-1b3d-4c5e-8f6a-0b1c2d3e4f5a'
+    const EDITOR = '5a9c2a7e-1b3d-4c5e-8f6a-0b1c2d3e4f5b'
+
+    beforeEach(() => {
+      getSession.mockResolvedValue(session)
+      docClient.send.mockResolvedValue({ Items: [] })
+    })
+
+    it('cleans up capacity plans before anything else', async () => {
+      const res = await DELETE(makeRequest())
+      expect(res.status).toBe(200)
+      expect(deleteAllCapacityData).toHaveBeenCalledWith('u1', {})
+      expect(deleteAllCapacityData.mock.invocationCallOrder[0]).toBeLessThan(docClient.send.mock.invocationCallOrder[0])
+    })
+
+    it('passes transfer decisions through', async () => {
+      const decisions = { [PLAN]: { action: 'transfer', newOwnerId: EDITOR } }
+      await DELETE(makeRequest({ capacityPlanDecisions: decisions }))
+      expect(deleteAllCapacityData).toHaveBeenCalledWith('u1', decisions)
+    })
+
+    it('returns 409 and deletes nothing when plans need a decision', async () => {
+      deleteAllCapacityData.mockRejectedValue(new DecisionRequiredError([{ planId: PLAN, name: 'Team A' }]))
+      const res = await DELETE(makeRequest())
+      expect(res.status).toBe(409)
+      expect((await res.json()).plansRequiringDecision).toEqual([{ planId: PLAN, name: 'Team A' }])
+      expect(docClient.send).not.toHaveBeenCalled()
+    })
+
+    it('rejects malformed decisions before deleting anything', async () => {
+      const res = await DELETE(makeRequest({ capacityPlanDecisions: { [PLAN]: { action: 'keep' } } }))
+      expect(res.status).toBe(400)
+      expect(deleteAllCapacityData).not.toHaveBeenCalled()
+      expect(docClient.send).not.toHaveBeenCalled()
+    })
   })
 })

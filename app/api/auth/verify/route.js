@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import crypto from "crypto";
+import { tokenMatchesHash } from "@/lib/tokens";
+import { isPrimaryUser } from "@/lib/users/identity";
+
+// One reply for unknown users, wrong tokens and already-used links, so the
+// endpoint can't be used to probe user ids.
+const invalid = () =>
+  NextResponse.json({ error: "Invalid or expired verification link. Please request a new one." }, { status: 400 });
 
 export async function POST(req) {
   try {
     const { userId, token } = await req.json();
 
-    if (!userId || !token) {
+    if (!userId || !token || typeof userId !== "string" || typeof token !== "string") {
       return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
     }
 
@@ -16,57 +22,29 @@ export async function POST(req) {
       Key: { PK: `USER#${userId}` }
     }));
 
-    if (!user) {
-      return NextResponse.json({ error: "User lookup failed. Account may not exist." }, { status: 404 });
-    }
-
-    if (user.isVerified) {
-      return NextResponse.json({ error: "Account is already fully verified." }, { status: 400 });
-    }
+    if (!isPrimaryUser(user) || user.isVerified) return invalid();
 
     // M1: Check verification token expiry (24 hours)
-    if (user.verificationTokenExpiry && new Date(user.verificationTokenExpiry) < new Date()) {
-      return NextResponse.json({ error: "Verification link has expired. Please request a new one." }, { status: 400 });
-    }
+    if (!user.verificationTokenExpiry || new Date(user.verificationTokenExpiry) < new Date()) return invalid();
 
-    // H3: Constant-time token comparison to prevent timing attacks
-    const tokenMatch =
-      user.verificationToken.length === token.length &&
-      crypto.timingSafeEqual(
-        Buffer.from(user.verificationToken),
-        Buffer.from(token)
-      );
-    if (!tokenMatch) {
-      return NextResponse.json({ error: "Invalid or expired verification token." }, { status: 400 });
-    }
+    // Hashed at rest; compared in constant time.
+    if (!tokenMatchesHash(token, user.verificationTokenHash)) return invalid();
 
-    // Process Token Resolution
-    // Update the primary item (PK: USER#<userId>)
-    await docClient.send(new UpdateCommand({
+    // Verified accounts must not be deleted by the unverified-account TTL.
+    const update = {
       TableName: TableNames.Users,
-      Key: { PK: `USER#${userId}` },
-      UpdateExpression: "SET isVerified = :v REMOVE verificationToken",
-      ExpressionAttributeValues: {
-        ":v": true
-      }
-    }));
-
-    // Also update the username pointer item (PK: USER#USERNAME#<username>)
-    // so login-by-username also sees isVerified = true.
+      UpdateExpression: "SET isVerified = :v, emailVerifiedAt = :t REMOVE verificationTokenHash, verificationTokenExpiry, expiresAt",
+      ExpressionAttributeValues: { ":v": true, ":t": new Date().toISOString() },
+    };
+    await docClient.send(new UpdateCommand({ ...update, Key: { PK: `USER#${userId}` } }));
+    // The username pointer is a full copy, so login-by-username sees the change.
     if (user.username) {
-      await docClient.send(new UpdateCommand({
-        TableName: TableNames.Users,
-        Key: { PK: `USER#USERNAME#${user.username}` },
-        UpdateExpression: "SET isVerified = :v REMOVE verificationToken",
-        ExpressionAttributeValues: {
-          ":v": true
-        }
-      }));
+      await docClient.send(new UpdateCommand({ ...update, Key: { PK: `USER#USERNAME#${user.username}` } }));
     }
 
-    return NextResponse.json({ success: true, message: "Email effectively verified and activated" });
+    return NextResponse.json({ success: true, message: "Email verified. You can now sign in." });
   } catch (error) {
-    console.error("Verification backend block error:", error);
-    return NextResponse.json({ error: "Internal server resolution error" }, { status: 500 });
+    console.error("Verification error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

@@ -21,5 +21,86 @@ jobs:
     - name: Install dependencies
       run: npm ci
       
-    - name: Run tests
-      run: npm test
+    # Unit, route, component, security and infra tests, with the coverage
+    # gates in jest.config.js (security modules must stay near-complete).
+    - name: Run tests with coverage
+      run: npm run test:coverage
+
+    - name: Upload coverage report
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: coverage
+        path: coverage/
+        retention-days: 14
+
+    # Critical advisories in production dependencies fail the build; high
+    # ones are reported (one is known, in patch-package's tooling chain).
+    - name: Audit production dependencies (critical blocks)
+      run: npm audit --omit=dev --audit-level=critical
+
+    - name: Audit production dependencies (high, report only)
+      run: npm audit --omit=dev --audit-level=high
+      continue-on-error: true
+
+  integration:
+    name: DynamoDB Local integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Use Node.js 24.x
+      uses: actions/setup-node@v5
+      with:
+        node-version: '24.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Start DynamoDB Local and create tables
+      run: |
+        docker compose up -d dynamodb-local
+        for i in $(seq 1 30); do curl -s http://localhost:8000 >/dev/null && break; sleep 1; done
+        node scripts/init-db.mjs
+
+    - name: Run integration tests
+      run: npx jest __tests__/integration
+      env:
+        DYNAMODB_INTEGRATION: "1"
+
+  e2e:
+    name: Playwright end-to-end tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Use Node.js 24.x
+      uses: actions/setup-node@v5
+      with:
+        node-version: '24.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Install Playwright browsers
+      run: npx playwright install --with-deps chromium firefox webkit
+
+    - name: Start DynamoDB Local
+      run: docker compose up -d dynamodb-local
+
+    - name: Run end-to-end tests
+      run: npm run test:e2e
+
+    - name: Upload Playwright report
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: playwright-report
+        path: playwright-report/
+        retention-days: 14
