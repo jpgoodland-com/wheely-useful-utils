@@ -11,10 +11,19 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     "coverage/**",
+    "playwright-report/**",
+    "test-results/**",
   ]),
   {
     rules: {
       "react-hooks/set-state-in-effect": "off",
+    },
+  },
+  {
+    // Playwright fixtures call `use()`, which isn't a React hook.
+    files: ["e2e/**"],
+    rules: {
+      "react-hooks/rules-of-hooks": "off",
     },
   },
 ]);

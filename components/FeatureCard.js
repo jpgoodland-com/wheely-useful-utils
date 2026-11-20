@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Dices, ListChecks, Users, CircleDot, Construction } from "lucide-react";
+import { ArrowRight, Dices, ListChecks, Users, CircleDot, Construction, Coffee, CalendarRange } from "lucide-react";
 import styles from "./FeatureCard.module.css";
 
 const ICON_MAP = {
@@ -9,6 +9,8 @@ const ICON_MAP = {
   ListChecks,
   Users,
   CircleDot,
+  Coffee,
+  CalendarRange,
 };
 
 export function FeatureCard({ name, description, icon, href, color, status }) {

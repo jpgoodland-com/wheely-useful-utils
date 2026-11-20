@@ -16,7 +16,7 @@ export default function RootLayout({ children }) {
           <Navigation />
           <main style={{ flex: 1 }}>{children}</main>
           <footer style={{ padding: "2rem 1rem", textAlign: "center", borderTop: "1px solid var(--glass-border)", marginTop: "auto", fontSize: "0.85rem", opacity: 0.7 }}>
-            &copy; {new Date().getFullYear()} Justin Goodland &bull; <Link href="/privacy" style={{ color: "var(--accent-blue)", textDecoration: "none" }}>Privacy Policy</Link>
+            &copy; {new Date().getFullYear()} Wheely Useful Utils! &bull; <Link href="/about" style={{ color: "var(--accent-blue)", textDecoration: "none" }}>About</Link> &bull; <Link href="/privacy" style={{ color: "var(--accent-blue)", textDecoration: "none" }}>Privacy Policy</Link>
           </footer>
         </AuthProvider>
       </body>

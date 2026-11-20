@@ -38,8 +38,18 @@ resource "aws_lb_target_group" "app" {
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
 
+  # Drain well inside the 2-minute Fargate Spot interruption warning.
+  # The default 300s can't finish before the task is killed, and API requests
+  # are short.
+  deregistration_delay = 30
+
+  # /api/health returns 200 without auth or data calls.
+  # The matcher stays 200-399 for one release: CI applies Terraform before it
+  # deploys the new image, and the old image answers this path with an HTTPS
+  # redirect (301). Tighten it to "200" once /api/health is live, so a redirect
+  # can no longer pass for a healthy task.
   health_check {
-    path                = "/"
+    path                = "/api/health"
     interval            = 30
     healthy_threshold   = 2
     unhealthy_threshold = 3

@@ -46,22 +46,15 @@ export default function WheelPage({ params }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ count: spinCount }),
     });
-    if (res.ok) {
-      const data = await res.json();
-      const winners = data.winners;
-      const newCategories = data.newCategories;
+    if (!res.ok) throw new Error("Spin failed backend validation");
+    const { winners, newCategories } = await res.json();
+    return { winners, newCategories };
+  };
 
-      return new Promise((resolve) => {
-        resolve({ winners });
-
-        setTimeout(() => {
-          setWheel({ ...wheel, categories: newCategories });
-          setLastWinners(winners);
-        }, 4500);
-      });
-    } else {
-      throw new Error("Spin failed backend validation");
-    }
+  // Applied only once the wheel has stopped, so slice angles never change mid-spin.
+  const onSpinFinished = ({ winners, newCategories }) => {
+    if (newCategories) setWheel((w) => (w ? { ...w, categories: newCategories } : w));
+    setLastWinners(winners || []);
   };
 
   if (loading || !user) return null;
@@ -155,7 +148,9 @@ export default function WheelPage({ params }) {
 
           <WheelSpinner
             categories={wheel.categories || []}
+            wheelName={wheel.name}
             onSpinComplete={onSpinComplete}
+            onSpinFinished={onSpinFinished}
           />
         </div>
 

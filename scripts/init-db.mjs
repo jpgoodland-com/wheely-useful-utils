@@ -12,6 +12,8 @@ const client = new DynamoDBClient({
 const TableNames = {
   Users: "WheelApp_Users",
   Wheels: "WheelApp_Wheels",
+  CoinFlip: "WheelApp_CoinFlip",
+  CapacityPlans: "WheelApp_CapacityPlans",
 };
 
 async function init() {
@@ -61,6 +63,51 @@ async function init() {
           IndexName: "OwnerIdIndex",
           KeySchema: [
             { AttributeName: "ownerId", KeyType: "HASH" }
+          ],
+          Projection: { ProjectionType: "ALL" },
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+        }
+      ],
+      ProvisionedThroughput: {
+        ReadCapacityUnits: 5,
+        WriteCapacityUnits: 5,
+      }
+    }));
+  }
+
+  if (!existingTables.includes(TableNames.CoinFlip)) {
+    console.log(`Creating ${TableNames.CoinFlip}...`);
+    await client.send(new CreateTableCommand({
+      TableName: TableNames.CoinFlip,
+      AttributeDefinitions: [
+        { AttributeName: "PK", AttributeType: "S" }, // COINFLIP#CONFIG#<userId> | COINFLIP#HISTORY#<userId>
+      ],
+      KeySchema: [
+        { AttributeName: "PK", KeyType: "HASH" }
+      ],
+      ProvisionedThroughput: {
+        ReadCapacityUnits: 5,
+        WriteCapacityUnits: 5,
+      }
+    }));
+  }
+
+  if (!existingTables.includes(TableNames.CapacityPlans)) {
+    console.log(`Creating ${TableNames.CapacityPlans}...`);
+    await client.send(new CreateTableCommand({
+      TableName: TableNames.CapacityPlans,
+      AttributeDefinitions: [
+        { AttributeName: "PK", AttributeType: "S" }, // PLAN#<id> | PLANACCESS#<planId>#<userId> | PLANAVAIL#<planId>#<memberId> | PLANQUOTA#<userId>
+        { AttributeName: "userId", AttributeType: "S" }, // only set on PLANACCESS items (sparse UserIdIndex)
+      ],
+      KeySchema: [
+        { AttributeName: "PK", KeyType: "HASH" }
+      ],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: "UserIdIndex",
+          KeySchema: [
+            { AttributeName: "userId", KeyType: "HASH" }
           ],
           Projection: { ProjectionType: "ALL" },
           ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }

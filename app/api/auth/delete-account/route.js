@@ -4,6 +4,10 @@ import { DeleteCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sd
 import { getSession } from "@/lib/session";
 import { sendEmail } from "@/lib/email";
 import { escapeHtml } from "@/lib/sanitize";
+import { deleteAllCoinData } from "@/lib/coinStore";
+import { readJsonLimited } from "@/lib/requestBody";
+import { deleteAllCapacityData, DecisionRequiredError, ConflictError } from "@/lib/capacity/store";
+import { CapacityError, normalizeDeletionDecisions } from "@/lib/capacity/validate";
 
 export async function DELETE(req) {
   try {
@@ -13,6 +17,32 @@ export async function DELETE(req) {
     }
 
     const { userId, username, email } = session;
+
+    const { body, error: bodyError } = await readJsonLimited(req, 16 * 1024);
+    if (bodyError) return bodyError;
+
+    // 0. Capacity plans first: owned plans other people can edit need a
+    // transfer-or-delete decision, and transfers must succeed before anything
+    // else is deleted.
+    let decisions;
+    try {
+      decisions = normalizeDeletionDecisions(body?.capacityPlanDecisions);
+    } catch (error) {
+      if (error instanceof CapacityError) return NextResponse.json({ error: error.message }, { status: 400 });
+      throw error;
+    }
+    let capacity;
+    try {
+      capacity = await deleteAllCapacityData(userId, decisions);
+    } catch (error) {
+      if (error instanceof DecisionRequiredError) {
+        return NextResponse.json({ error: error.message, plansRequiringDecision: error.plans }, { status: 409 });
+      }
+      if (error instanceof CapacityError || error instanceof ConflictError) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+      throw error;
+    }
 
     // 1. Find and delete wheels owned by the user (M4: Query GSI instead of Scan)
     const wheelRes = await docClient.send(new QueryCommand({
@@ -53,6 +83,9 @@ export async function DELETE(req) {
       }
     }
 
+    // 2b. Delete coin flip configurations and history
+    await deleteAllCoinData(userId);
+
     // 3. Delete the main user record
     await docClient.send(new DeleteCommand({
       TableName: TableNames.Users,
@@ -73,6 +106,8 @@ export async function DELETE(req) {
       userId: userId,
       username: username,
       wheelsDeleted: ownedWheels.length,
+      capacityPlansDeleted: capacity.plansDeleted,
+      capacityPlansTransferred: capacity.plansTransferred,
       timestamp: new Date().toISOString()
     }));
 

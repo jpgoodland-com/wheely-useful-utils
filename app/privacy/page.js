@@ -38,8 +38,19 @@ export default function PrivacyPage() {
             </p>
           </section>
 
+          <section id="zero-data-retention">
+            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.75rem", color: "var(--accent-pink)" }}>4. Zero Data Retention (ZDR)</h2>
+            <p>
+              We keep only the data needed to run the tools you use, for as long as your account exists. When you delete your account, your data is removed immediately from our databases.
+              <strong> We do not keep backups, archives, or any other copies of deleted data.</strong>
+            </p>
+            <p style={{ marginTop: "0.5rem" }}>
+              Server logs used to keep the service running are deleted automatically after 7 days.
+            </p>
+          </section>
+
           <section>
-            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.75rem", color: "var(--accent-pink)" }}>4. Cookies and Session Management</h2>
+            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.75rem", color: "var(--accent-pink)" }}>5. Cookies and Session Management</h2>
             <p>
               We utilize a single, secure, HTTP-only cookie (`auth_token`) solely for the purpose of maintaining your active login session. We do not use any third-party tracking cookies, analytics, or advertising pixels.
             </p>

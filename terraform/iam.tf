@@ -60,6 +60,7 @@ resource "aws_iam_role_policy" "task_dynamodb" {
       Effect = "Allow"
       Action = [
         "dynamodb:GetItem",
+        "dynamodb:BatchGetItem",
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
@@ -71,6 +72,9 @@ resource "aws_iam_role_policy" "task_dynamodb" {
         "${aws_dynamodb_table.users.arn}/index/*",
         aws_dynamodb_table.wheels.arn,
         "${aws_dynamodb_table.wheels.arn}/index/*",
+        aws_dynamodb_table.coinflip.arn,
+        aws_dynamodb_table.capacity_plans.arn,
+        "${aws_dynamodb_table.capacity_plans.arn}/index/*",
       ]
     }]
   })

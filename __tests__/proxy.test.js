@@ -141,6 +141,20 @@ describe('proxy - per-route tiers', () => {
     expect(calls.some(([key]) => key.startsWith('spin:'))).toBe(true)
   })
 
+  it.each([
+    ['/api/capacity-plans/p1/members', 'capacity-share:'],
+    ['/api/capacity-plans/p1/members/u2', 'capacity-share:'],
+    ['/api/capacity-plans/p1/access', 'capacity-share:'],
+    ['/api/capacity-plans/p1/access/u2', 'capacity-share:'],
+    ['/api/capacity-plans/p1/export', 'capacity-export:'],
+    ['/api/capacity-plans/p1/availability', 'api-general:'],
+  ])('applies the right capacity tier to %s', (path, prefix) => {
+    allowAll()
+    proxy(makeRequest(path))
+    const calls = checkRateLimit.mock.calls
+    expect(calls.some(([key]) => key.startsWith(prefix))).toBe(true)
+  })
+
   it('applies api-general tier to other API routes', () => {
     allowAll()
     proxy(makeRequest('/api/wheels'))
@@ -205,5 +219,104 @@ describe('proxy - mock OAuth sandbox blocking (C1)', () => {
     allowAll()
     const res = proxy(makeRequest('/auth/mock'))
     expect(res.status).not.toBe(404)
+  })
+})
+
+// ── Security event logging ────────────────────────────────────────────────────
+
+describe('proxy - rate limit security events', () => {
+  let warn
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(() => warn.mockRestore())
+
+  const events = () => warn.mock.calls.map(([line]) => JSON.parse(line))
+
+  it('logs one JSON event when a client first exceeds a tier, with tier and IP', () => {
+    checkRateLimit.mockImplementation((key) =>
+      key.startsWith('global:')
+        ? { allowed: true, remaining: 99, resetMs: Date.now() + 60_000 }
+        : { allowed: false, remaining: 0, resetMs: Date.now() + 30_000, firstBlocked: true }
+    )
+    const res = proxy(makeRequest('/api/auth/login', { xff: '9.9.9.9' }))
+    expect(res.status).toBe(429)
+    expect(events()).toEqual([expect.objectContaining({ securityEvent: 'rate_limited', tier: 'auth-mutate', ip: '9.9.9.9' })])
+  })
+
+  it('does not log again for later requests in the same burst', () => {
+    checkRateLimit.mockReturnValue({ allowed: false, remaining: 0, resetMs: Date.now() + 30_000, firstBlocked: false })
+    expect(proxy(makeRequest('/')).status).toBe(429)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('logs global circuit-breaker blocks', () => {
+    checkRateLimit.mockReturnValue({ allowed: false, remaining: 0, resetMs: Date.now() + 30_000, firstBlocked: true })
+    proxy(makeRequest('/'))
+    expect(events()).toEqual([expect.objectContaining({ securityEvent: 'rate_limited', tier: 'global', ip: '1.2.3.4' })])
+  })
+})
+
+// ── Server Action probes ──────────────────────────────────────────────────────
+
+describe('proxy - Server Action probes', () => {
+  beforeEach(allowAll)
+
+  function probe(pathname, actionId) {
+    return new NextRequest(`https://localhost${pathname}`, {
+      method: 'POST',
+      headers: { 'x-forwarded-for': '1.2.3.4', 'next-action': actionId },
+    })
+  }
+
+  it.each([
+    ['/', 'x'],
+    ['/', '"x"'],
+    ['/login', '0c8909fdc8f635acbff5155dcb5255804ce88618'],
+  ])('returns 404 for %s with Next-Action %s', (pathname, actionId) => {
+    const res = proxy(probe(pathname, actionId))
+    expect(res.status).toBe(404)
+  })
+
+  it('rejects probes before rate limiting', () => {
+    proxy(probe('/', 'x'))
+    expect(checkRateLimit).not.toHaveBeenCalled()
+  })
+
+  it('lets requests without a Next-Action header through', () => {
+    const res = proxy(makeRequest('/', { protocol: 'https' }))
+    expect(res.status).toBe(200)
+  })
+})
+
+// ── ALB health check ─────────────────────────────────────────────────────────
+
+describe('proxy - ALB health check', () => {
+  beforeEach(async () => {
+    process.env.FORCE_HTTPS = 'true'
+    jest.resetModules()
+    ;({ checkRateLimit } = require('@/lib/rateLimit'))
+    ;({ proxy } = await import('@/proxy'))
+    allowAll()
+  })
+
+  afterEach(() => {
+    delete process.env.FORCE_HTTPS
+  })
+
+  it('does not redirect the plain-HTTP health check to HTTPS', () => {
+    const res = proxy(makeRequest('/api/health', { xff: null, protocol: 'http' }))
+    expect(res.status).toBe(200)
+  })
+
+  it('does not rate-limit the health check', () => {
+    proxy(makeRequest('/api/health', { xff: null, protocol: 'http' }))
+    expect(checkRateLimit).not.toHaveBeenCalled()
+  })
+
+  it.each(['/api/healthz', '/api/health/x'])('still redirects and rate-limits %s', (pathname) => {
+    expect(proxy(makeRequest(pathname, { protocol: 'http' })).status).toBe(301)
+    proxy(makeRequest(pathname, { protocol: 'https' }))
+    expect(checkRateLimit).toHaveBeenCalled()
   })
 })

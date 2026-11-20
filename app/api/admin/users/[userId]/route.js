@@ -4,6 +4,9 @@ import { GetCommand, DeleteCommand, UpdateCommand, QueryCommand, ScanCommand } f
 import { getSession } from "@/lib/session";
 import bcrypt from "bcrypt";
 import { validatePassword } from "@/lib/password";
+import { deleteAllCoinData } from "@/lib/coinStore";
+import { deleteAllCapacityData } from "@/lib/capacity/store";
+import { errorResponse } from "@/lib/capacity/http";
 
 async function requireAdmin() {
   const session = await getSession();
@@ -30,6 +33,15 @@ export async function DELETE(req, { params }) {
   }));
 
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+  // Capacity plans: nobody can be asked to transfer ownership here, so the
+  // user's owned plans are deleted and their access to other plans removed.
+  // Runs first so a concurrent plan edit (409) stops before anything else is deleted.
+  try {
+    await deleteAllCapacityData(userId, {}, { force: true });
+  } catch (error) {
+    return errorResponse(error, "Admin user deletion (capacity plans)");
+  }
 
   // Delete wheels owned by the user
   const wheelRes = await docClient.send(new QueryCommand({
@@ -68,6 +80,9 @@ export async function DELETE(req, { params }) {
       }));
     }
   }
+
+  // Delete coin flip configurations and history
+  await deleteAllCoinData(userId);
 
   await docClient.send(new DeleteCommand({
     TableName: TableNames.Users,
