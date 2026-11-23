@@ -42,14 +42,18 @@ describe('Monitoring & Alerting (monitoring.tf)', () => {
     it('covers availability, latency/scaling, security, email and database signals', () => {
       const names = alarms.map((a) => a.name).sort()
       expect(names).toEqual([
+        'admin_role_changes',
         'app_errors',
+        'audit_write_failures',
         'client_4xx_spike',
+        'csrf_blocked',
         'dynamodb_throttles',
         'ecs_cpu_high',
         'ecs_memory_high',
         'elb_5xx',
         'latency_p95',
         'login_failures',
+        'login_throttled',
         'no_healthy_targets',
         'rate_limited_clients',
         'request_spike',
@@ -90,7 +94,13 @@ describe('Monitoring & Alerting (monitoring.tf)', () => {
 
   describe('security event metrics', () => {
     const appEventNames = () => {
-      const files = ['proxy.js', 'app/api/auth/login/route.js']
+      // Every server file that can log a security event.
+      const walk = (dir) => fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((e) => {
+        const rel = path.join(dir, e.name)
+        if (e.isDirectory()) return walk(rel)
+        return /\.(m?js)$/.test(e.name) ? [rel] : []
+      })
+      const files = ['proxy.js', ...walk('app'), ...walk('lib')]
       const names = new Set()
       for (const f of files) {
         const src = fs.readFileSync(path.join(ROOT, f), 'utf8')
@@ -101,7 +111,10 @@ describe('Monitoring & Alerting (monitoring.tf)', () => {
 
     it('has a metric filter for every security event the app logs', () => {
       const names = appEventNames()
-      expect(names).toEqual(['login_failed', 'rate_limited'])
+      expect(names).toEqual([
+        'admin_role_changed', 'audit_write_failed', 'csrf_blocked', 'login_failed', 'login_throttled',
+        'mfa_changed', 'password_changed', 'rate_limited', 'sessions_revoked',
+      ])
       const filters = getResourceBlocks(content, 'aws_cloudwatch_log_metric_filter').map((f) => f.content).join('\n')
       for (const name of names) expect(filters).toContain(`$.securityEvent = \\"${name}\\"`)
     })
@@ -133,7 +146,7 @@ describe('Monitoring & Alerting (monitoring.tf)', () => {
 
       const group = getResourceBlock(content, 'aws_cloudwatch_log_group', 'ecs_events')
       expect(group).toMatch(/name\s*=\s*"\/aws\/events\//)
-      expect(group).toMatch(/retention_in_days\s*=\s*30/)
+      expect(group).toMatch(/retention_in_days\s*=\s*365/)
 
       const policy = getResourceBlock(content, 'aws_cloudwatch_log_resource_policy', 'ecs_events')
       expect(policy).toContain('events.amazonaws.com')

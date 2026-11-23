@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
 import { GetCommand, UpdateCommand, QueryCommand, DeleteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { getSession } from "@/lib/session";
+import { findUserByIdentifier } from "@/lib/users/identity";
 import { sendEmail } from "@/lib/email";
 import { escapeHtml } from "@/lib/sanitize";
 
@@ -193,16 +194,9 @@ export async function PUT(req, { params }) {
         
         // 1. Find user by email or username GSI
         let shareUser = null;
-        const findUser = await docClient.send(new QueryCommand({
-            TableName: TableNames.Users,
-            IndexName: "EmailOrUsernameIndex",
-            KeyConditionExpression: "EmailOrUsername = :id",
-            ExpressionAttributeValues: { ":id": loweredId }
-        }));
-
-        const activeFound = (findUser?.Items || []).filter((u) => !u.PK?.startsWith("INVITE#"));
-        if (activeFound.length > 0) {
-            shareUser = activeFound[0];
+        const found = await findUserByIdentifier(loweredId);
+        if (found) {
+            shareUser = found;
         } else {
             // 2. Direct userId lookup
             try {

@@ -1,5 +1,6 @@
 import { POST } from '@/app/api/admin/invite/route'
 
+jest.mock('@/lib/audit', () => ({ recordAudit: jest.fn(async () => ({})) }))
 jest.mock('@/lib/dynamodb', () => ({
   docClient: { send: jest.fn() },
   TableNames: { Users: 'WheelApp_Users' },
@@ -84,7 +85,7 @@ describe('POST /api/admin/invite', () => {
 
   it('returns 409 when email already exists', async () => {
     getSession.mockResolvedValue(adminSession)
-    docClient.send.mockResolvedValueOnce({ Items: [{ userId: 'existing' }] })
+    docClient.send.mockResolvedValueOnce({ Items: [{ PK: 'USER#existing', userId: 'existing' }] })
     const res = await POST(makeRequest({ email: 'taken@example.com' }))
     expect(res.status).toBe(409)
     const body = await res.json()
@@ -138,8 +139,14 @@ describe('POST /api/admin/invite', () => {
       return Promise.resolve({ Items: [] })
     })
 
-    await POST(makeRequest({ email: 'pk@test.com' }))
-    expect(capturedItem?.PK).toMatch(/^INVITE#/)
+    const res = await POST(makeRequest({ email: 'pk@test.com' }))
+    expect(capturedItem?.PK).toMatch(/^INVITE#[0-9a-f]{64}$/)
+    // The stored key is the hash of the emailed token, never the token (H11).
+    const { sendEmail } = require('@/lib/email')
+    const token = sendEmail.mock.calls.at(-1)[0].text.match(/token=([0-9a-f]+)/)[1]
+    expect(capturedItem.PK).toBe(`INVITE#${require('@/lib/tokens').hashToken(token)}`)
+    expect(JSON.stringify(capturedItem)).not.toContain(token)
+    expect(res.status).toBe(200)
   })
 
   it('records the inviting user ID and username', async () => {

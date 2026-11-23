@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/AuthContext";
+import { useReauth } from "@/components/ReauthDialog";
+import { AuditLog } from "@/components/AuditLog";
 import Link from "next/link";
 import {
   ShieldCheck,
@@ -20,6 +22,7 @@ import {
 export default function AdminPanel() {
   const router = useRouter();
   const { user, loading } = useAuth();
+  const { fetchWithReauth, reauthDialog } = useReauth();
 
   const [adminUsers, setAdminUsers] = useState([]);
   const [adminMessage, setAdminMessage] = useState("");
@@ -73,7 +76,7 @@ export default function AdminPanel() {
   const handleDeleteUser = async (userId, username) => {
     if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
     setAdminMessage("");
-    const res = await fetch(`/api/admin/users/${userId}`, {
+    const res = await fetchWithReauth(`/api/admin/users/${userId}`, {
       method: "DELETE",
     });
     const data = await res.json();
@@ -87,7 +90,7 @@ export default function AdminPanel() {
 
   const handleToggleAdmin = async (userId, currentIsAdmin) => {
     setAdminMessage("");
-    const res = await fetch(`/api/admin/users/${userId}`, {
+    const res = await fetchWithReauth(`/api/admin/users/${userId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isAdmin: !currentIsAdmin }),
@@ -107,7 +110,7 @@ export default function AdminPanel() {
   const handleResetPassword = async (userId, username) => {
     if (!resetPasswordValue.trim()) return;
     setAdminMessage("");
-    const res = await fetch(`/api/admin/users/${userId}`, {
+    const res = await fetchWithReauth(`/api/admin/users/${userId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ newPassword: resetPasswordValue }),
@@ -162,6 +165,7 @@ export default function AdminPanel() {
 
   return (
     <div>
+      {reauthDialog}
       <nav className="breadcrumb">
         <Link href="/dashboard">Dashboard</Link>
         <ChevronRight size={14} className="separator" />
@@ -626,6 +630,8 @@ export default function AdminPanel() {
           </div>
         </div>
       </div>
+
+      <AuditLog />
     </div>
   );
 }

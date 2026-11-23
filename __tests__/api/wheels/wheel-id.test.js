@@ -247,7 +247,7 @@ describe('PUT /api/wheels/[id] - share', () => {
     getSession.mockResolvedValue(ownerSession)
     docClient.send
       .mockResolvedValueOnce({ Item: wheel })                          // GetCommand (wheel)
-      .mockResolvedValueOnce({ Items: [{ userId: 'newuser1' }] })     // QueryCommand (find user)
+      .mockResolvedValueOnce({ Items: [{ PK: 'USER#newuser1', userId: 'newuser1', email: 'newuser@example.com', EmailOrUsername: 'newuser@example.com' }] })     // QueryCommand (find user)
       .mockResolvedValueOnce({})                                       // UpdateCommand
 
     const res = await PUT(
@@ -288,7 +288,7 @@ describe('PUT /api/wheels/[id] - share', () => {
     getSession.mockResolvedValue(ownerSession)
     docClient.send
       .mockResolvedValueOnce({ Item: wheel })
-      .mockResolvedValueOnce({ Items: [{ userId: 'newuser1', email: 'newuser@example.com', username: 'newuser' }] })
+      .mockResolvedValueOnce({ Items: [{ PK: 'USER#newuser1', userId: 'newuser1', email: 'newuser@example.com', EmailOrUsername: 'newuser@example.com', username: 'newuser' }] })
       .mockResolvedValueOnce({})
 
     const res = await PUT(

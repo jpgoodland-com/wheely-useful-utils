@@ -1,3 +1,5 @@
+const fs = require('fs')
+const path = require('path')
 const { readTfFile, getResourceBlock, getResourceBlocks } = require('./helpers/tfHelper')
 
 describe('Infrastructure Security Configuration Tests', () => {
@@ -94,11 +96,30 @@ describe('Infrastructure Security Configuration Tests', () => {
       expect(sesPolicy).toContain('"ses:FromAddress" = "no-reply@${var.domain}"')
     })
 
+    it('makes the audit table append-only for the app', () => {
+      const audit = getResourceBlock(iamContent, 'aws_iam_role_policy', 'task_audit')
+      expect(audit).toMatch(/Action = \["dynamodb:PutItem", "dynamodb:Query"\]/)
+      expect(audit).toContain('aws_dynamodb_table.audit.arn')
+      // No other policy may grant write access to it.
+      const dynamo = getResourceBlock(iamContent, 'aws_iam_role_policy', 'task_dynamodb')
+      expect(dynamo).not.toContain('aws_dynamodb_table.audit')
+    })
+
+    it('scopes KMS use to the app key and requires an encryption context', () => {
+      const kmsPolicy = getResourceBlock(iamContent, 'aws_iam_role_policy', 'task_kms')
+      expect(kmsPolicy).not.toBeNull()
+      expect(kmsPolicy).toMatch(/Action\s*=\s*\["kms:Encrypt", "kms:Decrypt"\]/)
+      expect(kmsPolicy).toMatch(/Resource\s*=\s*aws_kms_key\.app\.arn/)
+      expect(kmsPolicy).toContain('"kms:EncryptionContextKeys" = "false"')
+      expect(kmsPolicy).not.toMatch(/kms:\*/)
+    })
+
     it('scopes Secrets Manager access to specific secret ARNs', () => {
       const secretsPolicy = getResourceBlock(iamContent, 'aws_iam_role_policy', 'task_exec_secrets')
       expect(secretsPolicy).not.toBeNull()
       expect(secretsPolicy).toContain('"secretsmanager:GetSecretValue"')
-      expect(secretsPolicy).toContain('aws_secretsmanager_secret.jwt_secret.arn')
+      // Sessions are server-side; the old JWT signing secret must not come back.
+      expect(secretsPolicy).not.toContain('jwt_secret')
       expect(secretsPolicy).toContain('aws_secretsmanager_secret.oauth_google.arn')
       expect(secretsPolicy).toContain('aws_secretsmanager_secret.oauth_microsoft.arn')
       expect(secretsPolicy).toContain('aws_secretsmanager_secret.oauth_github.arn')
@@ -106,14 +127,12 @@ describe('Infrastructure Security Configuration Tests', () => {
     })
   })
 
-  describe('Secrets & Environment Security (ecs.tf, secrets.tf, oauth.tf)', () => {
+  describe('Secrets & Environment Security (ecs.tf, oauth.tf)', () => {
     let ecsContent
-    let secretsContent
     let oauthContent
 
     beforeAll(() => {
       ecsContent = readTfFile('ecs.tf')
-      secretsContent = readTfFile('secrets.tf')
       oauthContent = readTfFile('oauth.tf')
     })
 
@@ -126,15 +145,35 @@ describe('Infrastructure Security Configuration Tests', () => {
       expect(taskBlock).not.toMatch(/name\s*=\s*"OAUTH_GOOGLE_CLIENT_SECRET"[\s\S]*value\s*=/)
 
       // Secrets must be injected via Secrets Manager valueFrom
-      expect(taskBlock).toContain('aws_secretsmanager_secret.jwt_secret.arn')
+      expect(taskBlock).not.toContain('JWT_SECRET')
       expect(taskBlock).toContain('aws_secretsmanager_secret.oauth_google.arn')
       expect(taskBlock).toContain('aws_secretsmanager_secret.oauth_microsoft.arn')
       expect(taskBlock).toContain('aws_secretsmanager_secret.oauth_github.arn')
     })
 
     it('configures lifecycle ignore_changes on secret versions to prevent leaking secrets in terraform state', () => {
-      expect(secretsContent).toContain('ignore_changes = [secret_string]')
       expect(oauthContent).toContain('ignore_changes = [secret_string]')
+    })
+
+    it('has no JWT signing secret (sessions are server-side)', () => {
+      expect(fs.existsSync(path.join(__dirname, '../../terraform/secrets.tf'))).toBe(false)
+    })
+  })
+
+  describe('Application KMS key (kms.tf)', () => {
+    let kmsContent
+    beforeAll(() => {
+      kmsContent = readTfFile('kms.tf')
+    })
+
+    it('rotates the key and keeps a 30-day deletion window', () => {
+      const key = getResourceBlock(kmsContent, 'aws_kms_key', 'app')
+      expect(key).toMatch(/enable_key_rotation\s*=\s*true/)
+      expect(key).toMatch(/deletion_window_in_days\s*=\s*30/)
+    })
+
+    it('passes the key to the app as APP_KMS_KEY_ID', () => {
+      expect(readTfFile('ecs.tf')).toMatch(/name = "APP_KMS_KEY_ID", value = aws_kms_key\.app\.arn/)
     })
   })
 

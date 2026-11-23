@@ -28,7 +28,22 @@ resource "aws_lb" "app" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
+  # Malformed headers are dropped instead of being passed to the app.
+  drop_invalid_header_fields = true
+
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.id
+    prefix  = "alb"
+    enabled = true
+  }
+
   tags = { Name = "${var.app_name}-alb" }
+
+  # Enabling access logs makes AWS write a test object to the bucket at
+  # once, so the bucket policy that lets ELB log delivery write there must
+  # exist first. Without this, both were applied in parallel and the
+  # first apply failed with "Access Denied for bucket".
+  depends_on = [aws_s3_bucket_policy.alb_logs]
 }
 
 resource "aws_lb_target_group" "app" {

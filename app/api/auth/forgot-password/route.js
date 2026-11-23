@@ -1,15 +1,18 @@
 import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
-import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import crypto from "crypto";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { sendEmail } from "@/lib/email";
 import { checkRateLimit } from "@/lib/rateLimit";
 import { getTrustedBaseUrl } from "@/lib/url";
+import { getClientIp } from "@/lib/clientIp";
+import { newToken } from "@/lib/tokens";
+import { consumeSharedLimit } from "@/lib/sharedRateLimit";
+import { findUserByEmail } from "@/lib/users/identity";
 
 export async function POST(req) {
   try {
     // Rate limit: 3 requests per 15 minutes per IP
-    const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
+    const ip = getClientIp(req.headers);
     const { allowed, resetMs } = checkRateLimit(`forgot-password:${ip}`, 3, 15 * 60 * 1000);
     if (!allowed) {
       const retryAfterSecs = Math.ceil((resetMs - Date.now()) / 1000);
@@ -30,60 +33,47 @@ export async function POST(req) {
 
     if (!email) return getGenericOk();
 
-    // Look up user
-    const result = await docClient.send(
-      new QueryCommand({
-        TableName: TableNames.Users,
-        IndexName: "EmailOrUsernameIndex",
-        KeyConditionExpression: "EmailOrUsername = :e",
-        ExpressionAttributeValues: { ":e": email },
-      })
-    );
+    // Per address across tasks, so rotating IPs can't flood someone's inbox.
+    // Over the limit the reply stays the same and nothing is sent.
+    if (!(await consumeSharedLimit(`forgot:${email}`, 3, 60 * 60 * 1000)).allowed) return getGenericOk();
 
-    const users = (result.Items ?? []).filter((u) => u.PK.startsWith("USER#") && !u.PK.includes("USERNAME"));
-    if (users.length === 0) return getGenericOk();
+    const user = await findUserByEmail(email);
+    if (!user) return getGenericOk();
 
-    const user = users[0];
-
-    // Generate a secure token with 1-hour expiry
-    const resetToken = crypto.randomBytes(32).toString("hex");
+    // Stored hashed; the plaintext only ever exists in the email.
+    const { token: resetToken, hash: resetTokenHash } = newToken();
     const resetExpiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
-    // Update both the primary and username pointer items
-    await docClient.send(
-      new UpdateCommand({
-        TableName: TableNames.Users,
-        Key: { PK: `USER#${user.userId}` },
-        UpdateExpression: "SET passwordResetToken = :t, passwordResetExpiry = :e",
-        ExpressionAttributeValues: { ":t": resetToken, ":e": resetExpiry },
-      })
-    );
-
+    const update = {
+      TableName: TableNames.Users,
+      UpdateExpression: "SET passwordResetTokenHash = :t, passwordResetExpiry = :e",
+      ExpressionAttributeValues: { ":t": resetTokenHash, ":e": resetExpiry },
+    };
+    await docClient.send(new UpdateCommand({ ...update, Key: { PK: `USER#${user.userId}` } }));
     if (user.username) {
-      await docClient.send(
-        new UpdateCommand({
-          TableName: TableNames.Users,
-          Key: { PK: `USER#USERNAME#${user.username}` },
-          UpdateExpression: "SET passwordResetToken = :t, passwordResetExpiry = :e",
-          ExpressionAttributeValues: { ":t": resetToken, ":e": resetExpiry },
-        })
-      );
+      await docClient.send(new UpdateCommand({ ...update, Key: { PK: `USER#USERNAME#${user.username}` } }));
     }
 
     const hostUrl = getTrustedBaseUrl(req);
     const resetLink = `${hostUrl}/reset-password?userId=${user.userId}&token=${resetToken}`;
 
-    await sendEmail({
-      to: user.email,
-      subject: "Reset Your Password",
-      text: `You requested a password reset for your Spin the Wheel account.\n\nClick the link below to set a new password (valid for 1 hour):\n\n${resetLink}\n\nIf you did not request this, you can safely ignore this email.`,
-      html: `
-        <p>You requested a password reset for your <strong>Spin the Wheel</strong> account.</p>
-        <p>Click the link below to set a new password (valid for 1 hour):</p>
-        <p><a href="${resetLink}">${resetLink}</a></p>
-        <p style="color:#888;">If you did not request this, you can safely ignore this email.</p>
-      `,
-    });
+    // A send failure must look like success: unknown addresses never reach
+    // this point, so a 500 here would reveal that the account exists.
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: "Reset Your Password",
+        text: `You requested a password reset for your Spin the Wheel account.\n\nClick the link below to set a new password (valid for 1 hour):\n\n${resetLink}\n\nIf you did not request this, you can safely ignore this email.`,
+        html: `
+          <p>You requested a password reset for your <strong>Spin the Wheel</strong> account.</p>
+          <p>Click the link below to set a new password (valid for 1 hour):</p>
+          <p><a href="${resetLink}">${resetLink}</a></p>
+          <p style="color:#888;">If you did not request this, you can safely ignore this email.</p>
+        `,
+      });
+    } catch (sendError) {
+      console.error("Forgot-password email send failed:", sendError?.message);
+    }
 
     return getGenericOk();
   } catch (error) {

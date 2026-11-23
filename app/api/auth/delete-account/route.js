@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { docClient, TableNames } from "@/lib/dynamodb";
 import { DeleteCommand, QueryCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { getSession } from "@/lib/session";
+import { getSession, requireRecentAuth } from "@/lib/session";
+import { clearSessionCookie, revokeAllSessions } from "@/lib/sessions/store";
+import { recordAudit } from "@/lib/audit";
 import { sendEmail } from "@/lib/email";
 import { escapeHtml } from "@/lib/sanitize";
 import { deleteAllCoinData } from "@/lib/coinStore";
@@ -15,6 +17,10 @@ export async function DELETE(req) {
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+
+    // Irreversible, so the user must have confirmed who they are recently.
+    const stepUp = requireRecentAuth(session);
+    if (stepUp) return stepUp;
 
     const { userId, username, email } = session;
 
@@ -86,6 +92,10 @@ export async function DELETE(req) {
     // 2b. Delete coin flip configurations and history
     await deleteAllCoinData(userId);
 
+    // Sign out every device before the account disappears.
+    await revokeAllSessions(userId);
+    await recordAudit(req, { action: "account.deleted", actorUserId: userId, details: { wheelsDeleted: ownedWheels.length } });
+
     // 3. Delete the main user record
     await docClient.send(new DeleteCommand({
       TableName: TableNames.Users,
@@ -121,17 +131,9 @@ export async function DELETE(req) {
       });
     }
 
-    // 6. Clear cookie and logout
+    // 6. Clear the session cookie
     const response = NextResponse.json({ success: true, message: "Account and associated data successfully deleted." });
-    response.cookies.set({
-      name: "auth_token",
-      value: "",
-      httpOnly: true,
-      path: "/",
-      maxAge: 0,
-    });
-
-    return response;
+    return clearSessionCookie(response);
   } catch (error) {
     console.error("Account deletion error:", error);
     return NextResponse.json({ error: "Internal server error during account deletion" }, { status: 500 });

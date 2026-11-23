@@ -1,0 +1,35 @@
+name: Semgrep
+
+# Static analysis (SAST). CodeQL needs GitHub Advanced Security on private
+# repositories, so this uses Semgrep Community Edition with the JavaScript,
+# Node.js and secrets rule sets. Any finding fails the job; suppress a false
+# positive inline with `// nosemgrep: <rule id> (reason)`.
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: semgrep/semgrep:1.140.0
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Scan
+      run: >
+        semgrep scan
+        --config p/javascript --config p/nodejs --config p/secrets
+        --metrics=off --error
+        --exclude node_modules --exclude .next --exclude coverage
+        --exclude __tests__ --exclude e2e

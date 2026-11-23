@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { exchangeCode, fetchUserProfile, getBaseUrl, getProviderConfig } from "@/lib/oauth";
-import { signToken } from "@/lib/auth";
+import { startSession } from "@/lib/sessions/store";
+import { createLoginChallenge, getPrimaryUser, isMfaEnabled } from "@/lib/mfa/store";
+import { setChallengeCookie } from "@/lib/mfa/challengeCookie";
+import { recordAudit } from "@/lib/audit";
+import { safeNextPath } from "@/lib/url";
 import { docClient, TableNames } from "@/lib/dynamodb";
-import { PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import crypto from "crypto";
+import { isAllowlistedAdmin } from "@/lib/users/adminAllowlist";
+import { findUserByEmail, findUserByUsername, isKeyTaken, normalizeEmail, USERNAME_RE } from "@/lib/users/identity";
 
 /**
  * GET /api/auth/callback/[provider]
@@ -12,15 +18,33 @@ import crypto from "crypto";
  * Handles the OAuth callback after the user authorises with the provider.
  *
  * 1. Validates the CSRF state token
- * 2. Exchanges the authorization code for an access token
- * 3. Fetches the user profile (email, name)
- * 4. Finds or creates the user in DynamoDB
- * 5. Issues our JWT and sets the auth_token cookie
- * 6. Redirects to /dashboard
+ * 2. Exchanges the authorization code (with the PKCE verifier) for tokens
+ * 3. Verifies the identity (ID token signature + nonce for OIDC providers)
+ * 4. Refuses emails the provider hasn't verified
+ * 5. Finds or creates the user in DynamoDB
+ * 6. Starts a server-side session (revoking any previous one)
+ * 7. Redirects to the saved `next` path, or /dashboard
  */
+const FLOW_COOKIES = ["oauth_state", "oauth_nonce", "oauth_verifier", "oauth_next"];
+
+function clearFlowCookies(response) {
+  for (const name of FLOW_COOKIES) {
+    response.cookies.set({ name, value: "", httpOnly: true, path: "/api/auth/callback", maxAge: 0 });
+  }
+  // Older deployments set oauth_state on "/"
+  response.cookies.set({ name: "oauth_state", value: "", httpOnly: true, path: "/", maxAge: 0 });
+  return response;
+}
+
+function safeEqual(a, b) {
+  return typeof a === "string" && typeof b === "string" && a.length === b.length &&
+    crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
 export async function GET(req, { params }) {
   const { provider } = await params;
   const baseUrl = getBaseUrl(req);
+  const fail = (code) => clearFlowCookies(NextResponse.redirect(new URL(`/login?error=${code}`, baseUrl)));
 
   const cfg = getProviderConfig(provider);
   if (!cfg) {
@@ -34,93 +58,78 @@ export async function GET(req, { params }) {
 
   // Provider returned an error (e.g. user denied consent)
   if (errorParam) {
-    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(errorParam)}`, baseUrl));
+    return fail(encodeURIComponent(errorParam.slice(0, 64)));
   }
 
   if (!code || !state) {
-    return NextResponse.redirect(new URL("/login?error=missing_params", baseUrl));
+    return fail("missing_params");
   }
 
   // CSRF check — H3: constant-time comparison to prevent timing attacks
   const cookieStore = await cookies();
-  const savedState = cookieStore.get("oauth_state")?.value;
-  if (
-    !savedState ||
-    savedState.length !== state.length ||
-    !crypto.timingSafeEqual(Buffer.from(savedState), Buffer.from(state))
-  ) {
-    return NextResponse.redirect(new URL("/login?error=invalid_state", baseUrl));
+  if (!safeEqual(cookieStore.get("oauth_state")?.value, state)) {
+    return fail("invalid_state");
   }
 
   try {
     // Build redirect URI (must match the one used in the initial request)
     const redirectUri = `${baseUrl}/api/auth/callback/${provider}`;
 
-    // Exchange code → access token → user profile
-    const accessToken = await exchangeCode(provider, code, redirectUri);
-    const profile = await fetchUserProfile(provider, accessToken);
+    const tokens = await exchangeCode(provider, code, redirectUri, cookieStore.get("oauth_verifier")?.value);
+    const profile = await fetchUserProfile(provider, tokens, { nonce: cookieStore.get("oauth_nonce")?.value });
 
     if (!profile.email) {
-      return NextResponse.redirect(new URL("/login?error=no_email", baseUrl));
+      return fail("no_email");
+    }
+    // C2: an email the provider hasn't verified proves nothing about who
+    // owns the mailbox, so it can't sign in to or create an account.
+    if (profile.emailVerified !== true) {
+      return fail("email_unverified");
     }
 
-    const email = profile.email.toLowerCase();
+    const email = normalizeEmail(profile.email);
+    let user = await findUserByEmail(email);
 
-    // Look up existing user by email
-    const existing = await docClient.send(new QueryCommand({
-      TableName: TableNames.Users,
-      IndexName: "EmailOrUsernameIndex",
-      KeyConditionExpression: "EmailOrUsername = :email",
-      ExpressionAttributeValues: { ":email": email },
-    }));
-
-    let user;
-
-    if (existing.Items && existing.Items.length > 0) {
-      // User exists — link provider if not already linked
-      user = existing.Items[0];
-
-      const providers = user.oauthProviders || [];
-      if (!providers.includes(provider)) {
-        providers.push(provider);
-        await docClient.send(new UpdateCommand({
-          TableName: TableNames.Users,
-          Key: { PK: user.PK },
-          UpdateExpression: "SET oauthProviders = :p, isVerified = :v",
-          ExpressionAttributeValues: {
-            ":p": providers,
-            ":v": true,
-          },
-        }));
+    if (user) {
+      const providers = Array.isArray(user.oauthProviders) ? [...user.oauthProviders] : [];
+      const wasUnverified = user.isVerified === false;
+      if (!providers.includes(provider) || wasUnverified) {
+        if (!providers.includes(provider)) providers.push(provider);
+        // C5: an unverified account was never proven to belong to whoever
+        // created it. The provider has now proven the mailbox, so the
+        // account becomes theirs; any password the creator set is removed.
+        const update = wasUnverified
+          ? {
+              UpdateExpression: "SET oauthProviders = :p, isVerified = :v, emailVerifiedAt = :t REMOVE password, verificationTokenHash, verificationTokenExpiry, expiresAt",
+              ExpressionAttributeValues: { ":p": providers, ":v": true, ":t": new Date().toISOString() },
+            }
+          : {
+              UpdateExpression: "SET oauthProviders = :p",
+              ExpressionAttributeValues: { ":p": providers },
+            };
+        await docClient.send(new UpdateCommand({ TableName: TableNames.Users, Key: { PK: user.PK }, ...update }));
         // Also update the username pointer item
         if (user.username) {
-          await docClient.send(new UpdateCommand({
-            TableName: TableNames.Users,
-            Key: { PK: `USER#USERNAME#${user.username}` },
-            UpdateExpression: "SET oauthProviders = :p, isVerified = :v",
-            ExpressionAttributeValues: {
-              ":p": providers,
-              ":v": true,
-            },
-          }));
+          await docClient.send(new UpdateCommand({ TableName: TableNames.Users, Key: { PK: `USER#USERNAME#${user.username}` }, ...update }));
         }
       }
     } else {
-      // New user — create account (no password, pre-verified)
+      // A legacy item (an old username containing "@") still claims this
+      // address; never create a second account under the same key.
+      if (await isKeyTaken(email)) {
+        return fail("account_conflict");
+      }
+
+      // New user — create account (no password, verified by the provider)
       const userId = crypto.randomUUID();
       const username = await generateUniqueUsername(email);
-      // Admin check via env var allowlist
-      const adminEmails = process.env.ADMIN_EMAILS;
-      const isAdmin = adminEmails
-        ? adminEmails.split(",").map(e => e.trim().toLowerCase()).includes(email.toLowerCase())
-        : false;
 
       let firstName = null;
       let lastName = null;
       if (profile.name) {
-        const parts = profile.name.trim().split(/\s+/);
-        firstName = parts[0] || null;
-        lastName = parts.slice(1).join(" ") || null;
+        const parts = String(profile.name).trim().split(/\s+/);
+        firstName = parts[0]?.slice(0, 50) || null;
+        lastName = parts.slice(1).join(" ").slice(0, 50) || null;
       }
 
       const userItem = {
@@ -132,7 +141,8 @@ export async function GET(req, { params }) {
         lastName,
         EmailOrUsername: email,
         isVerified: true,
-        isAdmin,
+        emailVerifiedAt: new Date().toISOString(),
+        isAdmin: isAllowlistedAdmin(email),
         authProvider: provider,
         oauthProviders: [provider],
         createdAt: new Date().toISOString(),
@@ -142,6 +152,7 @@ export async function GET(req, { params }) {
       await docClient.send(new PutCommand({
         TableName: TableNames.Users,
         Item: userItem,
+        ConditionExpression: "attribute_not_exists(PK)",
       }));
 
       // Store username pointer
@@ -152,81 +163,54 @@ export async function GET(req, { params }) {
           PK: `USER#USERNAME#${username}`,
           EmailOrUsername: username,
         },
+        ConditionExpression: "attribute_not_exists(PK)",
       }));
 
       user = userItem;
+      await recordAudit(req, { action: "account.created", actorUserId: userId, details: { method: `oauth:${provider}` } });
     }
 
-    // Issue JWT
-    const token = await signToken({
-      userId: user.userId,
-      email: user.email,
-      username: user.username,
-      firstName: user.firstName || null,
-      lastName: user.lastName || null,
-      isAdmin: user.isAdmin === true,
-    });
+    const next = safeNextPath(cookieStore.get("oauth_next")?.value, "/dashboard");
 
-    const response = NextResponse.redirect(new URL("/dashboard", baseUrl));
+    // A provider sign-in is the first factor only when the user has MFA.
+    const primary = isMfaEnabled(user) ? user : await getPrimaryUser(user.userId);
+    if (isMfaEnabled(primary)) {
+      const challenge = await createLoginChallenge(primary, { amr: `oauth:${provider}`, next });
+      const toMfa = NextResponse.redirect(new URL("/login/mfa", baseUrl));
+      return clearFlowCookies(setChallengeCookie(toMfa, challenge));
+    }
 
-    response.cookies.set({
-      name: "auth_token",
-      value: token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 60 * 30, // 30 minutes
-      sameSite: "lax", // Lax required — callback is a cross-site redirect completion
-    });
+    const response = NextResponse.redirect(new URL(next, baseUrl));
+    // Lax: the callback completes a cross-site redirect from the provider.
+    await startSession(response, user, { amr: `oauth:${provider}`, req, sameSite: "lax" });
 
-    // Clear the CSRF cookie
-    response.cookies.set({
-      name: "oauth_state",
-      value: "",
-      httpOnly: true,
-      path: "/api/auth/callback",
-      maxAge: 0,
-    });
-    response.cookies.set({
-      name: "oauth_state",
-      value: "",
-      httpOnly: true,
-      path: "/",
-      maxAge: 0,
-    });
-
-    return response;
+    return clearFlowCookies(response);
   } catch (error) {
-    console.error(`OAuth callback error (${provider}):`, error);
-    return NextResponse.redirect(new URL("/login?error=oauth_failed", baseUrl));
+    // Message only: errors can carry token or profile details.
+    console.error(`OAuth callback error (${provider}):`, error?.message);
+    return fail("oauth_failed");
   }
 }
 
 /**
- * Generate a unique username from an email prefix.
- * If the base name is taken, append a random 4-char hex suffix.
+ * Generate a unique, valid username from an email prefix.
+ * If the base name is taken, append a random hex suffix.
  */
 async function generateUniqueUsername(email) {
-  const base = email.split("@")[0]
-    .replace(/[^a-z0-9_-]/gi, "")
-    .substring(0, 20)
-    .toLowerCase();
+  let base = email.split("@")[0]
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "")
+    .replace(/^[._-]+/, "")
+    .substring(0, 20);
+  if (base.length < 3) base = `user${base}`;
 
-  const candidate = base || "user";
+  const isFree = async (candidate) =>
+    USERNAME_RE.test(candidate) && !(await findUserByUsername(candidate)) && !(await isKeyTaken(candidate));
 
-  // Check if username is taken
-  const check = await docClient.send(new QueryCommand({
-    TableName: TableNames.Users,
-    IndexName: "EmailOrUsernameIndex",
-    KeyConditionExpression: "EmailOrUsername = :u",
-    ExpressionAttributeValues: { ":u": candidate },
-  }));
-
-  if (!check.Items || check.Items.length === 0) {
-    return candidate;
+  if (await isFree(base)) return base;
+  for (let i = 0; i < 5; i++) {
+    const candidate = `${base}_${crypto.randomBytes(3).toString("hex")}`;
+    if (await isFree(candidate)) return candidate;
   }
-
-  // Append random suffix
-  const suffix = crypto.randomBytes(2).toString("hex");
-  return `${candidate}_${suffix}`;
+  return `user_${crypto.randomBytes(8).toString("hex")}`;
 }

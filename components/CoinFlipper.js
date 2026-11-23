@@ -23,6 +23,9 @@ const EDGE_LAYERS = [-0.75, -0.375, 0, 0.375, 0.75];
 function renderFaceContent(face) {
   if (!face) return null;
   if (face.type === "image") {
+    // An image face is empty until its upload finishes; src="" would make the
+    // browser fetch the current page again.
+    if (!face.value) return null;
     return (
       /* eslint-disable-next-line @next/next/no-img-element */
       <img

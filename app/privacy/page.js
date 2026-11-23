@@ -52,7 +52,7 @@ export default function PrivacyPage() {
           <section>
             <h2 style={{ fontSize: "1.25rem", marginBottom: "0.75rem", color: "var(--accent-pink)" }}>5. Cookies and Session Management</h2>
             <p>
-              We utilize a single, secure, HTTP-only cookie (`auth_token`) solely for the purpose of maintaining your active login session. We do not use any third-party tracking cookies, analytics, or advertising pixels.
+              We utilize a single, secure, HTTP-only cookie (`session`) solely for the purpose of maintaining your active login session. It holds a random identifier; the session itself is stored on our servers, so signing out or changing your password ends it everywhere. We do not use any third-party tracking cookies, analytics, or advertising pixels.
             </p>
           </section>
         </div>

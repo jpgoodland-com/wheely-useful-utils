@@ -20,7 +20,8 @@ test.describe("signed out", () => {
   test("login form shows an error for unknown credentials", async ({ page }) => {
     await page.goto("/login");
     await waitForHydration(page.getByRole("button", { name: "Login", exact: true }));
-    await page.getByLabel("Email or Username").fill("nobody-here@example.com");
+    // Unique per run: sign-in attempts are rate-limited per identifier.
+    await page.getByLabel("Email or Username").fill(uniqueEmail("nobody"));
     await page.getByLabel("Password", { exact: true }).fill("not-the-password-123!");
     await page.getByRole("button", { name: "Login", exact: true }).click();
     await expect(page.getByText(/invalid/i)).toBeVisible();
@@ -82,5 +83,56 @@ test.describe("mock OAuth sign in", () => {
 
     await expect(page).toHaveURL(/\/login\?error=access_denied/);
     await expect(page.getByText("Sign in was cancelled or access was denied by the provider.")).toBeVisible();
+  });
+});
+
+// Security plan C1 / M3: account-identifier rules and no account enumeration.
+test.describe("account security", () => {
+  const strongPassword = "Str0ng!Passw0rd#e2e";
+
+  async function submitSignup(page, { email, username }) {
+    await page.goto("/signup");
+    await waitForHydration(page.getByRole("button", { name: "Sign Up", exact: true }));
+    await page.getByLabel("First Name").fill("Ada");
+    await page.getByLabel("Last Name").fill("Lovelace");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Username").fill(username);
+    await page.getByLabel("Password", { exact: true }).fill(strongPassword);
+    await page.getByRole("button", { name: "Sign Up", exact: true }).click();
+  }
+
+  test("sign up rejects a username that is an email address", async ({ page }) => {
+    await submitSignup(page, { email: uniqueEmail(), username: `ceo-${Date.now()}@corp.com` });
+    await expect(page.getByText(/Username must be 3-32 characters/)).toBeVisible();
+  });
+
+  test("signing up twice with one email gives the same reply both times", async ({ page }) => {
+    const email = uniqueEmail();
+    const suffix = email.split("@")[0].slice(-12);
+    await submitSignup(page, { email, username: `first-${suffix}` });
+    const first = page.getByText(/check your email to verify your account/i);
+    await expect(first).toBeVisible();
+
+    await submitSignup(page, { email, username: `second-${suffix}` });
+    await expect(page.getByText(/check your email to verify your account/i)).toBeVisible();
+    await expect(page.getByText(/already (exists|registered|in use)|email is taken/i)).toHaveCount(0);
+  });
+
+  test("password login gives the same error for a social-only account and an unknown one", async ({ page, user }) => {
+    await page.context().clearCookies();
+    const attempt = async (identifier) => {
+      await page.goto("/login");
+      await waitForHydration(page.getByRole("button", { name: "Login", exact: true }));
+      await page.getByLabel("Email or Username").fill(identifier);
+      await page.getByLabel("Password", { exact: true }).fill(strongPassword);
+      await page.getByRole("button", { name: "Login", exact: true }).click();
+      const error = page.getByText(/invalid credentials/i);
+      await expect(error).toBeVisible();
+      return error.textContent();
+    };
+    const social = await attempt(user.email);
+    const unknown = await attempt(uniqueEmail("nobody"));
+    expect(social).toBe(unknown);
+    await expect(page).toHaveURL(/\/login$/);
   });
 });

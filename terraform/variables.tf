@@ -111,3 +111,31 @@ variable "alarm_ses_sends_per_hour" {
   type        = number
   default     = 200
 }
+
+# ── Security services (security plan M10) ─────────────────────────────────────
+# GuardDuty allows one detector per account and region, and organisations
+# often run CloudTrail centrally. Turn these off if they're already managed
+# elsewhere for this account.
+variable "enable_guardduty" {
+  description = "Create a GuardDuty detector for this account/region"
+  type        = bool
+  default     = true
+}
+
+variable "enable_cloudtrail" {
+  description = "Create a CloudTrail trail with a locked, validated log bucket"
+  type        = bool
+  default     = true
+}
+
+variable "waf_auth_requests_per_5min" {
+  description = "Per-IP limit on /api/auth/* requests at the WAF, per 5 minutes"
+  type        = number
+  default     = 300
+}
+
+variable "waf_requests_per_5min" {
+  description = "Per-IP limit on all requests at the WAF, per 5 minutes"
+  type        = number
+  default     = 3000
+}

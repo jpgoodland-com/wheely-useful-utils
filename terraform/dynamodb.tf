@@ -21,10 +21,25 @@ resource "aws_dynamodb_table" "users" {
     projection_type = "ALL"
   }
 
-  # Encryption at rest using AWS-managed KMS key
+  # Unverified signups carry expiresAt (epoch seconds) and are removed after
+  # 7 days, so an email address can't be squatted. Verification clears it.
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
+  # Encryption at rest with the customer-managed key in kms.tf
   server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
+  # Backups: restore to any second in the last 35 days. Deletion protection
+  # stops a mistaken `terraform destroy` or console click from losing data.
+  point_in_time_recovery {
     enabled = true
   }
+  deletion_protection_enabled = true
 
   tags = { Name = "WheelApp_Users" }
 }
@@ -53,10 +68,18 @@ resource "aws_dynamodb_table" "wheels" {
     projection_type = "ALL"
   }
 
-  # Encryption at rest using AWS-managed KMS key
+  # Encryption at rest with the customer-managed key in kms.tf
   server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
+  # Backups: restore to any second in the last 35 days. Deletion protection
+  # stops a mistaken `terraform destroy` or console click from losing data.
+  point_in_time_recovery {
     enabled = true
   }
+  deletion_protection_enabled = true
 
   tags = { Name = "WheelApp_Wheels" }
 }
@@ -75,10 +98,18 @@ resource "aws_dynamodb_table" "coinflip" {
     type = "S"
   }
 
-  # Encryption at rest using AWS-managed KMS key
+  # Encryption at rest with the customer-managed key in kms.tf
   server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
+  # Backups: restore to any second in the last 35 days. Deletion protection
+  # stops a mistaken `terraform destroy` or console click from losing data.
+  point_in_time_recovery {
     enabled = true
   }
+  deletion_protection_enabled = true
 
   tags = { Name = "WheelApp_CoinFlip" }
 }
@@ -109,10 +140,72 @@ resource "aws_dynamodb_table" "capacity_plans" {
     projection_type = "ALL"
   }
 
-  # Encryption at rest using AWS-managed KMS key
+  # Encryption at rest with the customer-managed key in kms.tf
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
   }
 
+  # Backups: restore to any second in the last 35 days. Deletion protection
+  # stops a mistaken `terraform destroy` or console click from losing data.
+  point_in_time_recovery {
+    enabled = true
+  }
+  deletion_protection_enabled = true
+
   tags = { Name = "WheelApp_CapacityPlans" }
+}
+
+# ── Audit table ───────────────────────────────────────────────────────────────
+# Append-only record of security and admin actions (security plan H12).
+# The app may only Put and Query (iam.tf), so it can't edit or delete history.
+# (PK: AUDIT#<ts>#<random>; ScopeIndex: scope "platform" | "user#<id>", ts)
+
+resource "aws_dynamodb_table" "audit" {
+  name         = "WheelApp_Audit"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "scope"
+    type = "S"
+  }
+
+  attribute {
+    name = "ts"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "ScopeIndex"
+    hash_key        = "scope"
+    range_key       = "ts"
+    projection_type = "ALL"
+  }
+
+  # Records expire after 400 days (a year of evidence plus margin).
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
+  # Encryption at rest with the customer-managed key in kms.tf
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamodb.arn
+  }
+
+  # Backups: restore to any second in the last 35 days. Deletion protection
+  # stops a mistaken `terraform destroy` or console click from losing data.
+  point_in_time_recovery {
+    enabled = true
+  }
+  deletion_protection_enabled = true
+
+  tags = { Name = "WheelApp_Audit" }
 }

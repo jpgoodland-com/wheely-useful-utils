@@ -41,6 +41,8 @@ locals {
     ses_bounce_rate           = 0.05  # SES puts accounts under review at 10%
     ses_complaint_rate        = 0.001 # SES puts accounts under review at 0.5%
     dynamodb_throttles        = 10
+    login_throttled_per_5min  = 20
+    csrf_blocked_per_5min     = 50
   }
 }
 
@@ -282,6 +284,79 @@ resource "aws_cloudwatch_log_metric_filter" "login_failed" {
   }
 }
 
+# Cross-site requests refused by proxy.js (security plan M2).
+resource "aws_cloudwatch_log_metric_filter" "csrf_blocked" {
+  name           = "${var.app_name}-csrf-blocked"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "{ $.securityEvent = \"csrf_blocked\" }"
+
+  metric_transformation {
+    name          = "CsrfBlocked"
+    namespace     = local.app_metric_namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+# Sign-ins refused by the shared per-IP / per-account limits (security plan H2).
+resource "aws_cloudwatch_log_metric_filter" "login_throttled" {
+  name           = "${var.app_name}-login-throttled"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "{ $.securityEvent = \"login_throttled\" }"
+
+  metric_transformation {
+    name          = "LoginThrottled"
+    namespace     = local.app_metric_namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+# Account security changes: sessions signed out, passwords changed, MFA
+# factors added or removed. One metric for the dashboard; the audit table has
+# the per-user detail.
+resource "aws_cloudwatch_log_metric_filter" "account_security_changes" {
+  name           = "${var.app_name}-account-security-changes"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "{ $.securityEvent = \"sessions_revoked\" || $.securityEvent = \"password_changed\" || $.securityEvent = \"mfa_changed\" }"
+
+  metric_transformation {
+    name          = "AccountSecurityChanges"
+    namespace     = local.app_metric_namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+# Platform admin granted or removed (alarmed on every occurrence).
+resource "aws_cloudwatch_log_metric_filter" "admin_role_changed" {
+  name           = "${var.app_name}-admin-role-changed"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "{ $.securityEvent = \"admin_role_changed\" }"
+
+  metric_transformation {
+    name          = "AdminRoleChanges"
+    namespace     = local.app_metric_namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+# The audit table refused a record (alarmed on every occurrence: the trail
+# then only exists in CloudWatch Logs).
+resource "aws_cloudwatch_log_metric_filter" "audit_write_failed" {
+  name           = "${var.app_name}-audit-write-failed"
+  log_group_name = aws_cloudwatch_log_group.app.name
+  pattern        = "{ $.securityEvent = \"audit_write_failed\" }"
+
+  metric_transformation {
+    name          = "AuditWriteFailures"
+    namespace     = local.app_metric_namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
 # Route handlers log unexpected failures with console.error ("... error", Error objects).
 resource "aws_cloudwatch_log_metric_filter" "app_errors" {
   name           = "${var.app_name}-app-errors"
@@ -321,6 +396,66 @@ resource "aws_cloudwatch_metric_alarm" "login_failures" {
   evaluation_periods  = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = local.alarm.login_failures_per_5min
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+}
+
+resource "aws_cloudwatch_metric_alarm" "login_throttled" {
+  alarm_name          = "${var.app_name}-login-throttled"
+  alarm_description   = "Many sign-ins refused by the per-IP or per-account limits: likely password spraying or brute force."
+  namespace           = local.app_metric_namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.login_throttled.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = local.alarm.login_throttled_per_5min
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+}
+
+resource "aws_cloudwatch_metric_alarm" "csrf_blocked" {
+  alarm_name          = "${var.app_name}-csrf-blocked"
+  alarm_description   = "Many cross-site requests refused: a page somewhere is trying to act on users' behalf."
+  namespace           = local.app_metric_namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.csrf_blocked.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = local.alarm.csrf_blocked_per_5min
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+}
+
+resource "aws_cloudwatch_metric_alarm" "admin_role_changes" {
+  alarm_name          = "${var.app_name}-admin-role-changes"
+  alarm_description   = "A platform admin was granted or removed. Check the audit log that it was expected."
+  namespace           = local.app_metric_namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.admin_role_changed.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+}
+
+resource "aws_cloudwatch_metric_alarm" "audit_write_failures" {
+  alarm_name          = "${var.app_name}-audit-write-failures"
+  alarm_description   = "Audit records couldn't be written to WheelApp_Audit. They're still in CloudWatch Logs; fix the table or IAM policy."
+  namespace           = local.app_metric_namespace
+  metric_name         = aws_cloudwatch_log_metric_filter.audit_write_failed.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
   ok_actions          = local.alarm_actions
@@ -477,7 +612,7 @@ resource "aws_cloudwatch_event_target" "ecs_task_stopped" {
 # up stoppedReason afterwards.
 resource "aws_cloudwatch_log_group" "ecs_events" {
   name              = "/aws/events/${var.app_name}-ecs"
-  retention_in_days = 30
+  retention_in_days = 365
 }
 
 resource "aws_cloudwatch_event_rule" "ecs_task_stopped_log" {
@@ -572,6 +707,10 @@ locals {
           aws_cloudwatch_metric_alarm.ecs_memory_high.arn,
           aws_cloudwatch_metric_alarm.rate_limited_clients.arn,
           aws_cloudwatch_metric_alarm.login_failures.arn,
+          aws_cloudwatch_metric_alarm.login_throttled.arn,
+          aws_cloudwatch_metric_alarm.csrf_blocked.arn,
+          aws_cloudwatch_metric_alarm.admin_role_changes.arn,
+          aws_cloudwatch_metric_alarm.audit_write_failures.arn,
           aws_cloudwatch_metric_alarm.client_4xx_spike.arn,
           aws_cloudwatch_metric_alarm.ses_send_spike.arn,
           aws_cloudwatch_metric_alarm.ses_bounce_rate.arn,

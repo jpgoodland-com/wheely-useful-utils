@@ -52,6 +52,28 @@ describe("CoinFlipper layout", () => {
   });
 });
 
+describe("CoinFlipper faces", () => {
+  const coin = (heads, tails) => ({ heads, tails });
+
+  it("renders image faces with no referrer", () => {
+    const { container } = render(
+      <CoinFlipper rotation={0} coin={coin({ type: "image", value: "data:image/webp;base64,AAAA" }, { type: "text", value: "T" })} />
+    );
+    const img = container.querySelector("img");
+    expect(img).toHaveAttribute("src", "data:image/webp;base64,AAAA");
+    expect(img).toHaveAttribute("referrerpolicy", "no-referrer");
+  });
+
+  it("renders nothing for an image face whose upload hasn't finished", () => {
+    // src="" would make the browser fetch the current page again.
+    const { container } = render(
+      <CoinFlipper rotation={0} coin={coin({ type: "image", value: "" }, { type: "emoji", value: "⭐" })} />
+    );
+    expect(container.querySelector("img")).toBeNull();
+    expect(container).toHaveTextContent("⭐");
+  });
+});
+
 describe("CoinFlipper toss", () => {
   it("plans and records only the coins that are rendered after the count goes down", async () => {
     jest.spyOn(Math, "random").mockReturnValue(0.5); // no jitter

@@ -6,6 +6,7 @@ jest.mock('@/lib/dynamodb', () => ({
 }))
 
 jest.mock('bcrypt', () => ({ hash: jest.fn().mockResolvedValue('hashed_password') }))
+const { hashToken } = require('@/lib/tokens')
 jest.mock('@/lib/rateLimit', () => ({
   checkRateLimit: jest.fn().mockReturnValue({ allowed: true, resetMs: Date.now() + 1000 }),
 }))
@@ -236,7 +237,7 @@ describe('POST /api/admin/invite/accept', () => {
     expect(capturedUser?.isAdmin).toBe(false)
   })
 
-  it('creates the user as admin (isAdmin: true) if their email is in ADMIN_EMAILS', async () => {
+  it('makes an invited user admin only when their email is on ADMIN_EMAILS (C3)', async () => {
     process.env.ADMIN_EMAILS = 'admin@example.com'
     let capturedUser = null
     docClient.send.mockImplementation((cmd) => {
@@ -254,26 +255,33 @@ describe('POST /api/admin/invite/accept', () => {
 
     expect(res.status).toBe(200)
     expect(capturedUser?.isAdmin).toBe(true)
+    delete process.env.ADMIN_EMAILS
   })
 
-  it('creates the user as non-admin (isAdmin: false) if ADMIN_EMAILS is unset', async () => {
+  it('does not make @example.com invitees admin when ADMIN_EMAILS is unset (C3)', async () => {
     delete process.env.ADMIN_EMAILS
     let capturedUser = null
     docClient.send.mockImplementation((cmd) => {
       if (cmd.input?.Item?.PK?.startsWith('USER#') && !cmd.input.Item.PK.includes('USERNAME#') && !capturedUser) {
         capturedUser = cmd.input.Item
       }
-      return Promise.resolve({ Item: { ...validInvite, email: 'admin@example.com' }, Items: [] })
+      return Promise.resolve({ Item: { ...validInvite, email: 'someone@example.com' }, Items: [] })
     })
-
-    const res = await POST(makePostRequest({
-      token: 'validtoken123',
-      username: 'real_admin2',
-      password: 'Str0ng!Passw0rd',
-    }))
-
+    const res = await POST(makePostRequest({ token: 'validtoken123', username: 'someone', password: 'Str0ng!Passw0rd' }))
     expect(res.status).toBe(200)
     expect(capturedUser?.isAdmin).toBe(false)
+  })
+
+  it('rejects a username containing @ (C1)', async () => {
+    docClient.send.mockResolvedValue({ Item: validInvite, Items: [] })
+    const res = await POST(makePostRequest({ token: 'validtoken123', username: 'boss@corp.com', password: 'Str0ng!Passw0rd' }))
+    expect(res.status).toBe(400)
+  })
+
+  it('looks invites up by the hash of the token, never the token itself (H11)', async () => {
+    docClient.send.mockResolvedValue({ Item: undefined, Items: [] })
+    await POST(makePostRequest({ token: 'validtoken123', username: 'someone', password: 'Str0ng!Passw0rd' }))
+    expect(docClient.send.mock.calls[0][0].input.Key.PK).toBe(`INVITE#${hashToken('validtoken123')}`)
   })
 
   // ── Security: single-use token ──────────────────────────────────────────
@@ -296,7 +304,7 @@ describe('POST /api/admin/invite/accept', () => {
     // The last call should be the DeleteCommand for the invite token
     const calls = docClient.send.mock.calls
     const lastCallInput = calls[calls.length - 1][0].input
-    expect(lastCallInput.Key.PK).toBe('INVITE#validtoken123')
+    expect(lastCallInput.Key.PK).toBe(`INVITE#${hashToken('validtoken123')}`)
     expect(docClient.send).toHaveBeenCalledTimes(6)
   })
 
@@ -340,7 +348,7 @@ describe('POST /api/admin/invite/accept', () => {
       password: 'PlainT3xt!P@ssword',
     }))
 
-    expect(bcrypt.hash).toHaveBeenCalledWith('PlainT3xt!P@ssword', 10)
+    expect(bcrypt.hash).toHaveBeenCalledWith('PlainT3xt!P@ssword', 12)
     expect(capturedUser?.password).toBe('hashed_password')
     expect(capturedUser?.password).not.toBe('PlainT3xt!P@ssword')
   })

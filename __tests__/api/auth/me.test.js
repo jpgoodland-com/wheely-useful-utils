@@ -8,14 +8,14 @@ beforeEach(() => jest.clearAllMocks())
 
 describe('GET /api/auth/me', () => {
   it('returns the session user when authenticated', async () => {
-    const session = { userId: 'u1', username: 'alice', email: 'a@b.com' }
+    const session = { userId: 'u1', username: 'alice', email: 'a@b.com', sessionId: 'sid-1' }
     getSession.mockResolvedValue(session)
 
     const res = await GET()
     const body = await res.json()
 
     expect(res.status).toBe(200)
-    expect(body.user).toEqual(session)
+    expect(body.user).toEqual({ userId: 'u1', username: 'alice', email: 'a@b.com' })
   })
 
   it('returns null user when not authenticated', async () => {
